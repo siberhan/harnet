@@ -9,6 +9,8 @@
 - done: chatgpt-service-1 (gpt) - PR #4 merged, control service
 - done: claude-transcript-1 (claude) - PR #6 merged, jsonl reader
 - done: antigravity-bin-1 (agy lane 1) - PR #5 merged, status CLI
+- open: claude-e2e-1 (claude) - live end-to-end chain, branch harnet/claude
+- open: antigravity-daemon-1 (agy lane 1) - file DB for jobs, branch harnet/antigravity
 - done: claude-spike-1 + codexfix-1 (claude) - PR #8 merged, live proof + codex fix
 - done: antigravity-panelwire-1 (agy lane 1) - PR #9 merged
 - done: antigravity-docs-2 (agy lane 2) - PR #10 merged
@@ -18,9 +20,9 @@
 
 ## Board + limits
 - workbuddy: BLOCKED, limit hit (was thought unlimited, it is limited)
-- antigravity: lane 1 idle, lane 2 idle
+- antigravity: lane 1 busy (daemon-1), lane 2 idle
 - chatgpt: idle, quota spared
-- claude: idle
+- claude: busy (e2e-1)
 
 ## Merge order
 - PR per job. Independent jobs = separate PRs to main, either order.
