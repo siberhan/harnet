@@ -6,13 +6,10 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  MODEL_PRICES,
   addEntry,
   emptySummary,
-  estimateCost,
   parseLine,
   parseTranscript,
-  priceFor,
   readTranscript,
   readUsage,
   summarizeUsage,
@@ -169,28 +166,7 @@ describe("transcript: usage blocks", () => {
 });
 
 describe("transcript: cost", () => {
-  it("matches a model id by longest prefix", () => {
-    assert.equal(priceFor("claude-opus-4-20250514")?.prefix, "claude-opus");
-    assert.equal(priceFor("claude-sonnet-4")?.prefix, "claude-sonnet");
-    assert.equal(priceFor("CLAUDE-HAIKU-4-5")?.prefix, "claude-haiku");
-    assert.equal(priceFor("some-local-llm"), null);
-    assert.equal(priceFor(null), null);
-  });
-
-  it("prices a usage block per million tokens", () => {
-    const usage = { input: 1_000_000, output: 0, cacheWrite: 0, cacheRead: 0, total: 1_000_000 };
-    const opus = MODEL_PRICES.find((p) => p.prefix === "claude-opus");
-    assert.ok(opus);
-    assert.equal(estimateCost("claude-opus-4", usage), opus.input);
-  });
-
-  it("charges nothing for an unknown model rather than guessing", () => {
-    const usage = { input: 1_000_000, output: 0, cacheWrite: 0, cacheRead: 0, total: 1_000_000 };
-    assert.equal(estimateCost("mystery-model", usage), 0);
-    assert.equal(estimateCost(null, usage), 0);
-  });
-
-  it("prefers a cost the harness wrote over our own estimate", () => {
+  it("reports only what the harness wrote", () => {
     const summary = parseTranscript(
       JSON.stringify({
         type: "assistant",
@@ -203,6 +179,16 @@ describe("transcript: cost", () => {
     assert.equal(summary.cost, 0.25);
   });
 
+  it("adds up costs across lines", () => {
+    const summary = parseTranscript(
+      [
+        JSON.stringify({ type: "assistant", role: "assistant", costUSD: 0.25 }),
+        JSON.stringify({ type: "assistant", role: "assistant", cost_usd: 0.75 }),
+      ].join("\n"),
+    );
+    assert.equal(summary.cost, 1);
+  });
+
   it("counts a standalone cost line with no usage", () => {
     const summary = parseTranscript(
       JSON.stringify({ type: "result", role: "assistant", cost_usd: 1.5 }),
@@ -210,12 +196,33 @@ describe("transcript: cost", () => {
     assert.equal(summary.cost, 1.5);
     assert.equal(summary.usage.total, 0);
   });
+
+  it("stays null when the harness wrote no cost, however many tokens ran", () => {
+    const summary = parseTranscript(
+      JSON.stringify({
+        type: "assistant",
+        role: "assistant",
+        model: "claude-opus-4",
+        usage: { input_tokens: 1_000_000, output_tokens: 500_000 },
+      }),
+    );
+    assert.equal(summary.cost, null);
+    // The tokens are still there for a caller that has a real price sheet.
+    assert.equal(summary.usage.total, 1_500_000);
+  });
+
+  it("ignores a non-numeric cost field", () => {
+    const summary = parseTranscript(
+      JSON.stringify({ type: "assistant", role: "assistant", costUSD: "1.20" }),
+    );
+    assert.equal(summary.cost, null);
+  });
 });
 
 describe("transcript: whole-file summary", () => {
   const text = readFileSync(FIXTURE, "utf8");
 
-  it("adds up tokens and cost across the fixture", () => {
+  it("adds up tokens across the fixture", () => {
     const s = parseTranscript(text);
     assert.deepEqual(s.usage, {
       input: 3300,
@@ -224,8 +231,8 @@ describe("transcript: whole-file summary", () => {
       cacheRead: 4000,
       total: 8150,
     });
-    // opus: (3300*15 + 350*75 + 500*18.75 + 4000*1.5) / 1e6
-    assert.equal(s.cost.toFixed(6), "0.091125");
+    // The fixture carries no cost field, so there is no cost to report.
+    assert.equal(s.cost, null);
   });
 
   it("skips bad lines, counts them, and keeps going", () => {
@@ -265,7 +272,7 @@ describe("transcript: whole-file summary", () => {
       const s = parseTranscript(input);
       assert.equal(s.lines, 0);
       assert.equal(s.skipped, 0);
-      assert.equal(s.cost, 0);
+      assert.equal(s.cost, null);
       assert.deepEqual(s.messages, []);
     }
     // @ts-expect-error deliberate wrong type from an untrusted caller

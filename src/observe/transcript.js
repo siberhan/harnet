@@ -5,6 +5,12 @@
  * own transcript jsonl (messages, tool_use blocks, usage counters). Harnet reads
  * job state, cost and reporting from here.
  *
+ * Cost rule: we report only what the harness itself wrote (costUSD / cost_usd).
+ * We do not price tokens ourselves - a made-up number is worse than no number,
+ * because it looks like a measurement. When no line carried a cost, the summary
+ * says `cost: null`, and the token counters are still there for whoever wants to
+ * price them against a real price sheet.
+ *
  * The visual channel (pane.log) is a raw byte stream for the human to watch.
  * It is never opened by this module and never feeds a decision. Nothing in this
  * file touches it on purpose.
@@ -20,19 +26,6 @@
 
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
-
-/**
- * Per-million-token prices used when the harness does not write a cost itself.
- * Matched by longest prefix, so dated model ids (claude-opus-4-20250514) hit the
- * same entry as the bare family name.
- * @type {ReadonlyArray<{ prefix: string, input: number, output: number, cacheWrite: number, cacheRead: number }>}
- */
-export const MODEL_PRICES = Object.freeze([
-  { prefix: "claude-opus", input: 15, output: 75, cacheWrite: 18.75, cacheRead: 1.5 },
-  { prefix: "claude-sonnet", input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.3 },
-  { prefix: "claude-haiku", input: 1, output: 5, cacheWrite: 1.25, cacheRead: 0.1 },
-  { prefix: "gpt", input: 2.5, output: 10, cacheWrite: 2.5, cacheRead: 0.25 },
-]);
 
 /**
  * @typedef {object} Usage
@@ -66,7 +59,7 @@ export const MODEL_PRICES = Object.freeze([
  * @property {ToolCall[]} toolCalls
  * @property {Record<string, number>} toolCounts
  * @property {Usage} usage
- * @property {number} cost
+ * @property {number|null} cost sum of the costs the harness wrote; null if it wrote none
  * @property {number} lines number of non-empty lines seen
  * @property {number} parsed number of lines turned into an entry
  * @property {number} skipped number of lines that were unusable
@@ -86,7 +79,7 @@ export function emptySummary() {
     toolCalls: [],
     toolCounts: {},
     usage: emptyUsage(),
-    cost: 0,
+    cost: null,
     lines: 0,
     parsed: 0,
     skipped: 0,
@@ -117,40 +110,6 @@ function isRecord(value) {
  */
 function str(value) {
   return typeof value === "string" && value.length > 0 ? value : null;
-}
-
-/**
- * Price lookup by longest matching prefix.
- * @param {string|null} model
- * @returns {{ prefix: string, input: number, output: number, cacheWrite: number, cacheRead: number }|null}
- */
-export function priceFor(model) {
-  if (!model) return null;
-  const id = model.toLowerCase();
-  let best = null;
-  for (const entry of MODEL_PRICES) {
-    if (!id.startsWith(entry.prefix)) continue;
-    if (best === null || entry.prefix.length > best.prefix.length) best = entry;
-  }
-  return best;
-}
-
-/**
- * Cost in USD for one usage block. Unknown model = 0, never a guess.
- * @param {string|null} model
- * @param {Usage} usage
- * @returns {number}
- */
-export function estimateCost(model, usage) {
-  const price = priceFor(model);
-  if (!price) return 0;
-  return (
-    (usage.input * price.input +
-      usage.output * price.output +
-      usage.cacheWrite * price.cacheWrite +
-      usage.cacheRead * price.cacheRead) /
-    1_000_000
-  );
 }
 
 /**
@@ -295,11 +254,11 @@ export function addEntry(summary, entry) {
     summary.usage.cacheWrite += entry.usage.cacheWrite;
     summary.usage.cacheRead += entry.usage.cacheRead;
     summary.usage.total += entry.usage.total;
-    // A cost written by the harness wins; we only price it ourselves otherwise.
-    summary.cost += entry.cost ?? estimateCost(entry.model, entry.usage);
-  } else if (entry.cost !== null) {
-    summary.cost += entry.cost;
   }
+
+  // Only what the harness wrote. A transcript with no cost lines stays null
+  // rather than collapsing to a confident-looking 0.
+  if (entry.cost !== null) summary.cost = (summary.cost ?? 0) + entry.cost;
 
   return summary;
 }
