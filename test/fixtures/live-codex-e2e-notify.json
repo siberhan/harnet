@@ -1,0 +1,1 @@
+{"type":"agent-turn-complete","thread-id":"01a06ddd-0b94-7f63-8174-0eae6a549f25","turn-id":"01a06ddd-0c2e-79f0-8f75-114237cb7b13","cwd":"/private/var/folders/nc/pnwnxmtx60db0wr82zn2214w0000gn/T/harnet-live-e2e-zQ8dUG/agent-wt","client":"codex-tui","input-messages":["Reply with exactly this one word and nothing else: HARNET-E2E-OK"],"last-assistant-message":"HARNET-E2E-OK"}

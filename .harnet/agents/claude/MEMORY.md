@@ -290,3 +290,46 @@ Left / for whoever picks this up:
   not by a live capture.
 - Codex still has no live e2e; its notify carries no transcript path, so there
   the payload fallback is the only source.
+
+## 2026-09-04 - claude-codexe2e-1 (codex live e2e)
+
+The codex path is now proven live, one real run, one turn spent.
+
+MEASURED, and this is the fact worth keeping: **codex's trust dialog lists
+"1. Yes, continue" FIRST and "2. No, quit" second** - the opposite of claude.
+The driver answered every trust dialog with claude's Down+Enter, which selected
+"No, quit"; codex exited and took the tmux session with it ("no server running
+on .../harnet-e2e"). That was the whole boot failure. Trust keys are now
+per-profile in scripts/live-e2e.mjs: claude ["Down","Enter"], codex ["Enter"].
+
+Two other boot lessons from the same pane.log:
+- Both dialogs print "Press enter to continue". Readiness now means the prompt
+  is visible AND that line is absent - otherwise the composer is "ready" under
+  a menu and the job text gets typed into it.
+- codex draws its composer while still "Starting MCP servers (2/3)"; keys sent
+  in that window can be dropped, so readiness waits for that line to clear
+  (30s cap) plus 2s.
+All three were found with DRY_BOOT=1, which costs no quota. Use it first.
+
+Live run (BOOT_TIMEOUT=120 SIGNAL_TIMEOUT=300 bash scripts/live-e2e.sh codex):
+notify 32s after send-keys, `agent-turn-complete`, thread-id
+01a06ddd-0b94-7f63-8174-0eae6a549f25, last-assistant-message HARNET-E2E-OK;
+report source = the notify payload itself, no log read needed; rollout at
+~/.codex/sessions/2026/09/04/rollout-...-01a06ddd-....jsonl parsed 15/15,
+0 skipped, lastMessage HARNET-E2E-OK, usage input 16934 / output 12 /
+total 16946; wake-up carried `Report: HARNET-E2E-OK`.
+
+Added: test/fixtures/live-codex-e2e-notify.json and
+test/fixtures/live-codex-e2e-rollout.jsonl (both verbatim from that run) and
+test/codex-e2e.test.js - 5 tests: the captures agree with each other, and the
+real codex adapter + queue + control service complete the job and emit exactly
+one wake-up carrying the report. 273/273 tests, `npm run check` clean.
+
+Left / for whoever picks this up:
+- Both harnesses are now proven end to end. The remaining gap is the same one:
+  nothing in bin/ or src/panel passes readReport, so a real deployment still
+  gets null reports on the claude path.
+- codex never needed the report reader (attempts.length === 0) - its notify
+  carries the answer. So on codex the flush race cannot happen; on claude it can.
+- The codex weekly quota took exactly one turn (16946 tokens). DRY_BOOT runs
+  before it were free.
