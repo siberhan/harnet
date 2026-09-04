@@ -2,7 +2,7 @@
 
 Role: scaffold + web panel + tests + docs. Fast, simple tasks first.
 Branch: harnet/antigravity. Dir: .harnet/agents/antigravity/wt.
-Status: turn 2 done. Waiting for the orchestrator. NOT pushed — commit sits on harnet/antigravity only.
+Status: turn 4 done (reconstructed by orchestrator 2026-09-04 after uncommitted root write was lost; substance from job reports).
 
 ## Turn 1 — job antigravity-panel-1 (read-only web panel, agents + queue)
 
@@ -46,3 +46,9 @@ Files:
 Left:
 - Phase 1 step 5 follow-up: connect real control service queue to GET /api/queue and panel.
 - Phase 2: WebSocket, xterm.js attach to live tmux sessions, permission question queue.
+
+## Turn 3 — job antigravity-bin-1 (bin/harnet status CLI, reconstructed)
+Commit ff5c054, PR #5 merged. bin/harnet.js status reads STATE.md + agent MEMORYs, prints table. test/status-cli.test.js 9 tests. 165/165 green.
+
+## Turn 4 — job antigravity-panelwire-1 (panel transcript tail, reconstructed)
+Commit c3fd0d5, PR #9 merged. GET /api/agents/<id>/tail + last-message on cards. 8 new tests in test/panel.test.js. 204/204 green on branch.

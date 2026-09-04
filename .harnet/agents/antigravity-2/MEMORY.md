@@ -2,7 +2,7 @@
 
 Role: second agy lane. Tiny independent tasks only (docs, chores). Never touches src/.
 Branch: harnet/antigravity-2. Dir: .harnet/agents/antigravity-2/wt.
-Status: turn 1 done. Waiting for the orchestrator. NOT pushed — commit sits on harnet/antigravity-2 only.
+Status: turn 2 done (reconstructed by orchestrator 2026-09-04 after uncommitted root write was lost; substance from job report).
 
 ## Turn 1 — job antigravity-docs-1 (docs: API.md + USAGE.md)
 
@@ -22,3 +22,6 @@ Files:
 
 Left:
 - None for this lane. Ready for next docs/chore task.
+
+## Turn 2 — job antigravity-docs-2 (API refresh, reconstructed)
+Commit 1b19057, PR #10 merged. Added control.js, transcript reader (no cost), bin/harnet.js, live-spike to docs/API.md. Fixed stale queue/jobs signatures from source. Docs only.
