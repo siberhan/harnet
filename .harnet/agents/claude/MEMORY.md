@@ -11,9 +11,10 @@ Status: idle.
 - pane.log is never opened by this module. A test writes a real escape-code pane.log
   next to a transcript and asserts the counts do not move.
 - Usage shapes accepted: message.usage and top-level usage, snake_case and camelCase.
-- Cost is NOT estimated. Only costUSD / cost_usd written by the harness is reported;
-  summary.cost is `number|null` and stays null when no line carried one. See the
-  claude-costcut-1 entry for why - do not reintroduce a price table.
+- Money is out of scope. There is no cost field anywhere in the reader: no price
+  table, no costUSD reading, no summary.cost. Two turns were spent removing it
+  (claude-costcut-1, claude-costcut-2) - do not add it back. Callers that need a
+  figure read `usage` and apply their own price sheet.
 - summarizeUsage stays exported: test/smoke.test.js and docs/API.md depend on it.
 
 ## Log
@@ -38,8 +39,22 @@ Why: the price table was a placeholder, not a verified price sheet. A guessed nu
 looks like a measurement, so it is worse than no number. Tokens are still counted in
 full for a caller that has real prices.
 
+### claude-costcut-2 (done)
+Removed the cost field entirely - the rest of what claude-costcut-1 left behind.
+
+Changed:
+- src/observe/transcript.js - dropped summary.cost from TranscriptSummary and
+  emptySummary, entry.cost from TranscriptEntry, and the costUSD / cost_usd read
+  in parseLine. addEntry now folds usage only. Header comment states the rule.
+- test/transcript.test.js - the cost suite is replaced by one guard test asserting
+  `"cost" in entry === false` and `"cost" in summary === false` for a line that
+  does carry costUSD, so a reintroduction fails loudly.
+
 Left / for whoever picks this up:
-- docs/API.md still documents only summarizeUsage. Out of my allowed paths
-  (src/observe/ + test/), so the reader API is undocumented there.
-- No consumer reads summary.cost yet (grepped src + bin: none), so the number->null
-  type change broke nothing. Whoever wires the panel cost view must handle null.
+- summarizeUsage is now the only place in the file that mentions cost. It is the
+  legacy block helper, unrelated to the jsonl reader, and both test/smoke.test.js
+  and docs/API.md pin its `{tokens, cost}` shape. Removing it needs a job that is
+  allowed to touch docs/ - worth doing, it is dead weight.
+- docs/API.md still documents only summarizeUsage; the reader API is undocumented
+  there. Out of my allowed paths (src/observe/ + test/).
+- No consumer read summary.cost (grepped src + bin), so removing it broke nothing.

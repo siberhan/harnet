@@ -3,13 +3,12 @@
  *
  * Structural channel only: the harness writes one JSON object per line into its
  * own transcript jsonl (messages, tool_use blocks, usage counters). Harnet reads
- * job state, cost and reporting from here.
+ * job state and reporting from here.
  *
- * Cost rule: we report only what the harness itself wrote (costUSD / cost_usd).
- * We do not price tokens ourselves - a made-up number is worse than no number,
- * because it looks like a measurement. When no line carried a cost, the summary
- * says `cost: null`, and the token counters are still there for whoever wants to
- * price them against a real price sheet.
+ * No cost: this module reports token counters only. Money is deliberately out of
+ * scope - it was estimated once (a placeholder price table), then narrowed to the
+ * harness-written costUSD, and is now gone entirely. Whoever needs a figure reads
+ * `usage` and applies their own price sheet.
  *
  * The visual channel (pane.log) is a raw byte stream for the human to watch.
  * It is never opened by this module and never feeds a decision. Nothing in this
@@ -21,7 +20,7 @@
  * so the last line can be half-written and older harness versions emit shapes we
  * do not know. A bad line is never fatal - it is skipped and counted, and the
  * caller gets the `skipped` counter back so a broken transcript is visible
- * instead of silently producing a too-cheap-looking summary.
+ * instead of silently producing a short-looking summary.
  */
 
 import { createReadStream } from "node:fs";
@@ -59,7 +58,6 @@ import { createInterface } from "node:readline";
  * @property {ToolCall[]} toolCalls
  * @property {Record<string, number>} toolCounts
  * @property {Usage} usage
- * @property {number|null} cost sum of the costs the harness wrote; null if it wrote none
  * @property {number} lines number of non-empty lines seen
  * @property {number} parsed number of lines turned into an entry
  * @property {number} skipped number of lines that were unusable
@@ -79,7 +77,6 @@ export function emptySummary() {
     toolCalls: [],
     toolCounts: {},
     usage: emptyUsage(),
-    cost: null,
     lines: 0,
     parsed: 0,
     skipped: 0,
@@ -172,7 +169,6 @@ function toolCallsOf(content, line) {
  * @property {string} text
  * @property {ToolCall[]} toolCalls
  * @property {Usage|null} usage
- * @property {number|null} cost cost written by the harness itself, if any
  * @property {string|null} sessionId
  * @property {string|null} timestamp
  */
@@ -204,7 +200,6 @@ export function parseLine(raw, line = 0) {
 
   const content = message ? message.content : value.content;
   const usage = readUsage(message?.usage) ?? readUsage(value.usage);
-  const cost = value.costUSD ?? value.cost_usd ?? message?.costUSD;
 
   return {
     line,
@@ -214,7 +209,6 @@ export function parseLine(raw, line = 0) {
     text: textOf(content),
     toolCalls: toolCallsOf(content, line),
     usage,
-    cost: typeof cost === "number" && Number.isFinite(cost) ? cost : null,
     sessionId: str(value.sessionId) ?? str(value.session_id),
     timestamp: str(value.timestamp) ?? str(value.ts),
   };
@@ -255,10 +249,6 @@ export function addEntry(summary, entry) {
     summary.usage.cacheRead += entry.usage.cacheRead;
     summary.usage.total += entry.usage.total;
   }
-
-  // Only what the harness wrote. A transcript with no cost lines stays null
-  // rather than collapsing to a confident-looking 0.
-  if (entry.cost !== null) summary.cost = (summary.cost ?? 0) + entry.cost;
 
   return summary;
 }

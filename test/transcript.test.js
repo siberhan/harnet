@@ -92,18 +92,16 @@ describe("transcript: line parsing", () => {
     assert.equal(entry.text, "hello");
   });
 
-  it("accepts flat top-level usage and a harness-written cost", () => {
+  it("accepts flat top-level usage", () => {
     const entry = parseLine(
       JSON.stringify({
         type: "assistant",
         role: "assistant",
         model: "claude-opus-4",
         usage: { input_tokens: 1, output_tokens: 2 },
-        costUSD: 0.5,
       }),
     );
     assert.ok(entry);
-    assert.equal(entry.cost, 0.5);
     assert.equal(entry.usage?.total, 3);
   });
 
@@ -165,57 +163,23 @@ describe("transcript: usage blocks", () => {
   });
 });
 
-describe("transcript: cost", () => {
-  it("reports only what the harness wrote", () => {
-    const summary = parseTranscript(
-      JSON.stringify({
-        type: "assistant",
-        role: "assistant",
-        model: "claude-opus-4",
-        costUSD: 0.25,
-        usage: { input_tokens: 1_000_000, output_tokens: 0 },
-      }),
-    );
-    assert.equal(summary.cost, 0.25);
-  });
+describe("transcript: money is out of scope", () => {
+  it("reports no cost, even when the harness wrote one", () => {
+    const line = JSON.stringify({
+      type: "assistant",
+      role: "assistant",
+      model: "claude-opus-4",
+      costUSD: 0.25,
+      usage: { input_tokens: 1_000_000, output_tokens: 0 },
+    });
+    const entry = parseLine(line);
+    assert.ok(entry);
+    assert.equal("cost" in entry, false);
 
-  it("adds up costs across lines", () => {
-    const summary = parseTranscript(
-      [
-        JSON.stringify({ type: "assistant", role: "assistant", costUSD: 0.25 }),
-        JSON.stringify({ type: "assistant", role: "assistant", cost_usd: 0.75 }),
-      ].join("\n"),
-    );
-    assert.equal(summary.cost, 1);
-  });
-
-  it("counts a standalone cost line with no usage", () => {
-    const summary = parseTranscript(
-      JSON.stringify({ type: "result", role: "assistant", cost_usd: 1.5 }),
-    );
-    assert.equal(summary.cost, 1.5);
-    assert.equal(summary.usage.total, 0);
-  });
-
-  it("stays null when the harness wrote no cost, however many tokens ran", () => {
-    const summary = parseTranscript(
-      JSON.stringify({
-        type: "assistant",
-        role: "assistant",
-        model: "claude-opus-4",
-        usage: { input_tokens: 1_000_000, output_tokens: 500_000 },
-      }),
-    );
-    assert.equal(summary.cost, null);
-    // The tokens are still there for a caller that has a real price sheet.
-    assert.equal(summary.usage.total, 1_500_000);
-  });
-
-  it("ignores a non-numeric cost field", () => {
-    const summary = parseTranscript(
-      JSON.stringify({ type: "assistant", role: "assistant", costUSD: "1.20" }),
-    );
-    assert.equal(summary.cost, null);
+    const summary = parseTranscript(line);
+    assert.equal("cost" in summary, false);
+    // Tokens still land in full: a caller with a price sheet does its own math.
+    assert.equal(summary.usage.input, 1_000_000);
   });
 });
 
@@ -231,8 +195,6 @@ describe("transcript: whole-file summary", () => {
       cacheRead: 4000,
       total: 8150,
     });
-    // The fixture carries no cost field, so there is no cost to report.
-    assert.equal(s.cost, null);
   });
 
   it("skips bad lines, counts them, and keeps going", () => {
@@ -272,7 +234,6 @@ describe("transcript: whole-file summary", () => {
       const s = parseTranscript(input);
       assert.equal(s.lines, 0);
       assert.equal(s.skipped, 0);
-      assert.equal(s.cost, null);
       assert.deepEqual(s.messages, []);
     }
     // @ts-expect-error deliberate wrong type from an untrusted caller
