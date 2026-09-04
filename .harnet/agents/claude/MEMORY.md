@@ -205,3 +205,54 @@ Left / for whoever picks this up:
   spawn time - probably by passing an agent id into the hook command.
 - No codex e2e yet: codex's notify carries no transcript path, so the report
   path there is unproven end to end.
+
+## Standing facts about src/service/report.js (mine, claude-readreport-1)
+
+- It exists because of ONE measured live failure, not a theory: the Stop hook
+  can fire before the harness flushes the assistant turn, and a one-shot reader
+  then stores an empty report for a job that answered correctly. Proven again
+  this turn: the old one-shot reader on the same input produces
+  `Report: (no report)` where the new one produces the answer.
+- Order is transcript first, payload second, null third. The payload copy is a
+  FALLBACK, never a shortcut - the transcript is the richer source and a
+  transcript that lands mid-poll still wins.
+- The wait is synchronous because the adapter's `readReport` contract is. That
+  blocks the loop, so DEFAULT_FLUSH_TIMEOUT_MS is 2s (not the driver's 15s) and
+  the first read is always immediate: a healthy signal pays nothing. Default
+  sleep is Atomics.wait on a SharedArrayBuffer; tests inject their own.
+- `flushTimeoutMs: 0` = read once, then fall back. Use it wherever blocking is
+  unacceptable.
+- Never invents a report: if neither source has one it returns null and the
+  caller's own "(no report)" default stands. Same discipline as the cost
+  episode - no fabricated data.
+- LAST_MESSAGE_KEYS covers claude snake_case AND codex hyphenated spellings
+  (`last-assistant-message`, `last-agent-message`), so the same reader works for
+  the codex adapter when someone wires it.
+- MAP.js cross-import ban respected: `parse` and `readFile` are injected, so
+  transcript.js is not imported. That is also what makes the tests instant.
+
+### claude-readreport-1 (done)
+Moved the e2e finding into the shipping code.
+
+Added:
+- src/service/report.js - createReportReader (poll + payload fallback),
+  lastMessageFromPayload, readFileOrNull, sleepSync, LAST_MESSAGE_KEYS.
+- test/report.test.js - 17 tests: payload spellings, no-sleep happy path,
+  poll-until-flush, budget cap, flushTimeoutMs 0, never-invent, a REAL late
+  flush on a real temp file (appended inside the injected sleep), and 4 tests
+  driving the real claude adapter + control service with a fake Stop signal,
+  including one asserting the wake-up says `Report: HARNET-E2E-OK` and not
+  `(no report)`.
+263/263 tests, `npm run check` clean.
+
+Left / for whoever picks this up:
+- scripts/live-e2e.mjs still carries its OWN copy of this logic (its inline
+  readReport + waitForFlush). scripts/ was outside this turn's allowed paths.
+  It should import createReportReader instead - two copies will drift.
+- Nothing in bin/ or src/panel wires readReport yet; the adapter still defaults
+  to null reports unless a caller passes one. Whoever builds the real service
+  entry point must pass createReportReader({ parse: parseTranscript }).
+- src/MAP.js does not list src/service/control.js or src/service/report.js.
+  Out of my allowed paths; the map is drifting from the tree.
+- Codex side is unproven live: its notify carries no transcript path, so there
+  the payload fallback is the ONLY source. The key aliases are in place for it.
