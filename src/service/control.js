@@ -6,7 +6,10 @@
  * signal parsing, and jobs.js owns result normalization and wake-up formatting.
  */
 
-import { buildResult, formatGroupWakeup } from "./jobs.js";
+import { buildResult, createGroupRegistry, formatGroupWakeup } from "./jobs.js";
+import { createQueue } from "./queue.js";
+import { createReportReader } from "./report.js";
+import { attachJobStore, createJobStore } from "./store.js";
 
 /**
  * @typedef {object} JobLike
@@ -338,3 +341,61 @@ export function createControlService({ queue, groups, adapters }) {
     wakeups: () => wakeupLog.slice(),
   };
 }
+
+/**
+ * Sets up a control service with queue, persistence store,
+ * result groups, and report reader.
+ *
+ * @param {object} [options]
+ * @param {string} [options.rootDir]
+ * @param {string} [options.storePath]
+ * @param {QueueLike} [options.queue]
+ * @param {GroupsLike} [options.groups]
+ * @param {AdapterRegistry} [options.adapters]
+ * @param {(text: string) => import("./report.js").ParsedTranscript} [options.parse]
+ * @param {(ctx: { transcriptPath: string|null, agentId?: string, payload?: unknown }) => string|null} [options.reportReader]
+ * @param {Partial<import("./report.js").ReportReaderOptions>} [options.reportReaderOptions]
+ * @returns {{
+ *   service: ReturnType<typeof createControlService>,
+ *   queue: import("./store.js").QueueLike,
+ *   store: import("./store.js").JobStore,
+ *   groups: GroupsLike,
+ *   reportReader: (ctx: { transcriptPath: string|null, agentId?: string, payload?: unknown }) => string|null
+ * }}
+ */
+export function setupControlService(options = {}) {
+  const rootDir = options.rootDir ?? process.cwd();
+  const queue =
+    options.queue ??
+    /** @type {any} */ (attachJobStore(createQueue(), {
+      filePath: options.storePath,
+      rootDir,
+    }));
+  const groups = options.groups ?? createGroupRegistry();
+  const adapters = options.adapters ?? {};
+  const service = createControlService({ queue, groups, adapters });
+
+  let reportReader = options.reportReader;
+  if (!reportReader && options.parse) {
+    reportReader = createReportReader({
+      parse: options.parse,
+      ...options.reportReaderOptions,
+    });
+  }
+
+  const store =
+    queue.store ??
+    createJobStore({
+      filePath: options.storePath,
+      rootDir,
+    });
+
+  return {
+    service,
+    queue,
+    store,
+    groups,
+    reportReader: reportReader ?? (() => null),
+  };
+}
+
