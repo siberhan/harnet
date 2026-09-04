@@ -1,0 +1,9 @@
+{"type":"user","sessionId":"sess-42","timestamp":"2026-09-04T10:00:00Z","message":{"role":"user","content":[{"type":"text","text":"read the map"}]}}
+{"type":"assistant","sessionId":"sess-42","timestamp":"2026-09-04T10:00:03Z","message":{"role":"assistant","model":"claude-opus-4-20250514","content":[{"type":"text","text":"Looking."},{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"src/MAP.js"}}],"usage":{"input_tokens":1000,"output_tokens":200,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
+{"type":"user","sessionId":"sess-42","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"// phase 1 module map"}]}}
+{ this line is not json
+{"type":"assistant","sessionId":"sess-42","timestamp":"2026-09-04T10:00:09Z","message":{"role":"assistant","model":"claude-opus-4-20250514","content":[{"type":"tool_use","id":"toolu_2","name":"Bash","input":{"command":"npm test"}},{"type":"tool_use","id":"toolu_3","name":"Read","input":{"file_path":"README.md"}}],"usage":{"input_tokens":2000,"output_tokens":100,"cache_creation_input_tokens":500,"cache_read_input_tokens":4000}}}
+
+{"no_type_field":true}
+{"type":"assistant","sessionId":"sess-42","timestamp":"2026-09-04T10:00:20Z","message":{"role":"assistant","model":"claude-opus-4-20250514","content":[{"type":"text","text":"Map read, tests green."}],"usage":{"input_tokens":300,"output_tokens":50}}}
+{"type":"assistant","sessionId":"sess-42","message":{"role":"assistant","model":"claude-op
