@@ -12,6 +12,10 @@ Harnet spec: README.md. Read it first. It is the only authority on architecture.
 - Start of turn: read your MEMORY.md + ORCHESTRATION.md, write 3-line recap.
 - End of turn: append to your MEMORY.md: what changed, file list, what is left.
 
+## Parallel rule
+- Parallel agents only when tasks are truly independent. Otherwise needless branching.
+- Dependent tasks wait for merge. No exceptions in phase 1.
+
 ## Phase 1 order
 1. scaffold (repo layout, package, lint, test runner)
 2. worktree + branch manager
