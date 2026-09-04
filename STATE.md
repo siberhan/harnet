@@ -7,11 +7,11 @@
 - done: antigravity-panel-1 (agy) - read-only panel, 67 tests
 - open: chatgpt-adapters-1 (gpt) - finish adapters from wb WIP, branch harnet/chatgpt-adapters
 - review: antigravity-ci-1 (agy) - PR #1, CI workflow
-- open: antigravity-docs-1 (agy lane 2) - docs/, branch harnet/antigravity-2
+- review: antigravity-docs-1 (agy lane 2) - PR #2, docs only
 
 ## Board + limits
 - workbuddy: BLOCKED, limit hit (was thought unlimited, it is limited)
-- antigravity: lane 1 review (PR #1), lane 2 busy (antigravity-docs-1)
+- antigravity: lane 1 review (PR #1), lane 2 review (PR #2)
 - chatgpt: busy (chatgpt-adapters-1, takeover)
 - claude: idle, tiny tasks only until limit renews
 
