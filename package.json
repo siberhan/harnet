@@ -9,6 +9,11 @@
   },
   "scripts": {
     "test": "node --test \"test/**/*.test.js\"",
+    "check": "tsc --noEmit -p jsconfig.json",
     "start": "node src/panel/server.js"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.1",
+    "typescript": "^7.0.2"
   }
 }

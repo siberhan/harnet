@@ -1,4 +1,9 @@
-/** Job queue stub. README: Kontrol Servisi + Is Kuyrugu ve Hatalar. */
+/**
+ * Job queue stub. README: Kontrol Servisi + Is Kuyrugu ve Hatalar.
+ * @typedef {"queued"|"running"|"done"|"error"|"timeout"|"crashed"|"refused"} JobStatusName
+ * @typedef {{ id: string, prompt: string, status?: JobStatusName }} Job
+ * @typedef {{ push: (job: Job) => Job, pending: () => Job[] }} Queue
+ */
 
 export const JobStatus = Object.freeze({
   QUEUED: "queued",
@@ -11,10 +16,13 @@ export const JobStatus = Object.freeze({
 });
 
 export function createQueue() {
+  /** @type {Job[]} */
   const items = [];
   return {
+    /** @param {Job} job @returns {Job} */
     push(job) {
-      const entry = { status: JobStatus.QUEUED, ...job };
+      /** @type {Job} */
+      const entry = { status: /** @type {JobStatusName} */ (JobStatus.QUEUED), ...job };
       items.push(entry);
       return entry;
     },
