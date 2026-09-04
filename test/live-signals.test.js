@@ -7,11 +7,11 @@
  * the shapes the code assumes can be checked against the shapes that actually
  * arrive.
  *
- * Two of these tests pin a mismatch rather than a success. They are
- * characterization tests: they record what the current code does with real
- * input, so the gap is visible in CI instead of living only in a report. When
- * the adapter/reader is fixed, these tests fail loudly and get inverted - that
- * failure is the point.
+ * Two of these started as characterization tests pinning a mismatch: real codex
+ * notify keys are hyphenated, and a real codex rollout nests everything under
+ * `.payload`, so neither the adapter nor the reader could see a completed turn.
+ * Both are fixed now (claude-codexfix-1) and the assertions are inverted, which
+ * is exactly the handover the characterization was for.
  *
  * The spike script itself never runs here. It opens real TUI sessions and
  * spends tokens; `npm test` only reads what it left behind.
@@ -116,28 +116,31 @@ test("live codex notify says agent-turn-complete but hyphenates its keys", () =>
   assert.equal(payload.last_assistant_message, undefined);
 });
 
-test("codex adapter cannot match the live notify payload yet", () => {
+test("codex adapter completes the job from the live notify payload", () => {
   const payload = readJson("live-codex-notify.json");
   const queue = fakeQueue("codex", "job-2");
   const adapter = createCodexAdapter({ run: noRun, queue, now: () => 2000 });
 
-  // Bound with the id codex actually sent.
+  // Bound with the id codex actually sent, and handed the payload exactly as
+  // the notify program wrote it - hyphens and all. No caller-side massaging.
   adapter.bind({ agentId: "codex", sessionId: payload["thread-id"] });
   const result = adapter.handleNotify(payload);
 
-  // Characterization: the turn really is complete, but the adapter reads
-  // `thread_id`, finds nothing, and the job stays running forever. This is the
-  // bug the live spike found; fixing the adapter must flip these assertions.
-  assert.equal(result.matched, false);
-  assert.match(String(result.reason), /unknown thread id/);
-  assert.deepEqual(queue.completed, []);
+  assert.equal(result.matched, true);
+  assert.equal(result.agentId, "codex");
+  assert.equal(result.jobId, "job-2");
+  assert.equal(result.status, "done");
+  assert.equal(result.report, "HARNET-SPIKE-CODEX-OK");
+  assert.deepEqual(queue.completed, [
+    { jobId: "job-2", status: "done", report: "HARNET-SPIKE-CODEX-OK", at: 2000 },
+  ]);
 });
 
-test("codex adapter matches once the notify keys are normalised", () => {
+test("codex adapter still matches an already snake_case notify payload", () => {
   const raw = readJson("live-codex-notify.json");
-  // What a fixed adapter (or a normalising layer) would hand handleNotify.
+  // An older codex build, or anything that normalised before us.
   const payload = {
-    ...raw,
+    type: raw.type,
     thread_id: raw["thread-id"],
     last_assistant_message: raw["last-assistant-message"],
   };
@@ -152,22 +155,34 @@ test("codex adapter matches once the notify keys are normalised", () => {
   assert.equal(result.report, "HARNET-SPIKE-CODEX-OK");
 });
 
-test("codex rollout parses every line but yields nothing readable yet", async () => {
+test("live codex rollout parses into messages and usage", async () => {
   const summary = await readTranscript(fixture("live-codex-rollout.jsonl"));
 
-  // Not a robustness failure: every line is valid JSON with a `type`, so
-  // nothing is skipped...
   assert.equal(summary.lines, 5);
   assert.equal(summary.parsed, 5);
   assert.equal(summary.skipped, 0);
 
-  // ...but codex nests the whole record under `payload`, and the reader looks
-  // for Claude's flat `message`/`usage`. Result: a transcript that looks read
-  // and is empty. Characterization again - a codex-shaped reader must flip it.
-  assert.equal(summary.messages.length, 0);
-  assert.equal(summary.lastMessage, null);
-  assert.equal(summary.sessionId, null);
-  assert.equal(summary.usage.total, 0);
+  assert.equal(summary.sessionId, "01a06d0c-f4f1-7ec1-8b74-9b455f57d909");
+  assert.equal(summary.lastMessage, "HARNET-SPIKE-CODEX-OK");
+  assert.deepEqual(
+    summary.messages.map((m) => m.role),
+    ["user", "assistant"],
+  );
+  // task_complete repeats the assistant answer; it must not become a third
+  // message, only refresh lastMessage.
+  assert.equal(summary.messages.filter((m) => m.role === "assistant").length, 1);
+
+  // Real numbers from the captured run: prompt 16933 of which 11776 cached,
+  // 15 output. The cached share is not counted twice, so the total is codex's
+  // own total_tokens.
+  assert.deepEqual(summary.usage, {
+    input: 5157,
+    output: 15,
+    cacheWrite: 0,
+    cacheRead: 11776,
+    total: 16948,
+  });
+  assert.equal("cost" in summary, false);
 });
 
 test("codex rollout does hold the message and usage, one level down", () => {

@@ -7,6 +7,14 @@
  * notification already carries the last assistant message, so no transcript
  * read is needed to produce a report.
  *
+ * Key style: a real codex-cli 0.153.0 notify payload hyphenates its keys
+ * (`thread-id`, `last-assistant-message`, `turn-id`, `input-messages`) - this
+ * was measured by scripts/live-spike.sh, not assumed. This adapter used to read
+ * only the snake_case spelling, so no live turn ever matched and every codex job
+ * hung forever. Everything now goes through normalizeNotify() at the entry
+ * point, which accepts both spellings; the rest of the file keeps reading
+ * snake_case only.
+ *
  * src/MAP.js bans cross-imports, so queue.js is not imported: the queue is
  * injected and described by a structural type (QueueLike). DECISIONS.md accepts
  * this duplication; test/adapters-contract.test.js keeps the shapes honest and
@@ -141,16 +149,26 @@ export function shQuote(value) {
  */
 
 /**
+ * A notify payload after normalizeNotify(): snake_case only.
  * @typedef {object} NotifyPayload
  * @property {string} [type]
  * @property {string} [thread_id] codex thread id; `session_id` is accepted too
  * @property {string} [session_id]
+ * @property {string} [turn_id]
+ * @property {string[]} [input_messages]
  * @property {string} [cwd]
+ * @property {string} [client] e.g. "codex-tui"
  * @property {string} [last_assistant_message] the report, carried by notify
  * @property {string} [status] "error" turns the completion into an error
  * @property {string} [message] approval/permission text
  * @property {boolean} [approval] alternate approval-request marker
  * @property {string} [agentId] explicit agent, when the notify config carries it
+ */
+
+/**
+ * What codex actually writes: the same record with hyphenated keys. Kept as its
+ * own type so the boundary between "what arrives" and "what we read" is visible.
+ * @typedef {Record<string, unknown>} RawNotifyPayload
  */
 
 /**
@@ -190,11 +208,49 @@ export function spawnRunner(argv, opts) {
 }
 
 /**
+ * Hyphenated key -> the snake_case name the rest of this file reads.
+ * Only the keys codex was observed to send; anything else is passed through.
+ */
+const NOTIFY_KEY_ALIASES = Object.freeze({
+  "thread-id": "thread_id",
+  "turn-id": "turn_id",
+  "last-assistant-message": "last_assistant_message",
+  "input-messages": "input_messages",
+  "session-id": "session_id",
+});
+
+/**
+ * Fold a raw notify record into the snake_case shape. Both spellings are
+ * accepted because codex has shipped both and Harnet cannot pick the version
+ * the user has installed; an already-snake_case key always wins, so a payload
+ * carrying both never loses the canonical value.
+ * @param {RawNotifyPayload|NotifyPayload} raw
+ * @returns {NotifyPayload}
+ */
+export function normalizeNotify(raw) {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return {};
+  /** @type {Record<string, unknown>} */
+  const out = {};
+  for (const [key, value] of Object.entries(raw)) {
+    const alias = /** @type {Record<string, string>} */ (NOTIFY_KEY_ALIASES)[key];
+    if (alias === undefined) {
+      out[key] = value;
+      continue;
+    }
+    // Never let the alias overwrite a canonical key that is already there.
+    if (!Object.prototype.hasOwnProperty.call(raw, alias)) out[alias] = value;
+  }
+  return /** @type {NotifyPayload} */ (out);
+}
+
+/**
  * Whether a notify payload is an approval request rather than a turn result.
- * @param {NotifyPayload} payload
+ * Accepts a raw payload: it normalises first, like the handlers do.
+ * @param {RawNotifyPayload|NotifyPayload} raw
  * @returns {boolean}
  */
-export function isApprovalRequest(payload) {
+export function isApprovalRequest(raw) {
+  const payload = normalizeNotify(raw);
   return payload.type === CODEX.approvalType || payload.approval === true;
 }
 
@@ -427,10 +483,11 @@ export function createCodexAdapter(options = {}) {
   /**
    * The turn ended. Match the signal to the running job and complete it.
    * Anything that is not a turn-complete notification is ignored on purpose.
-   * @param {NotifyPayload} payload
+   * @param {RawNotifyPayload|NotifyPayload} raw
    * @returns {SignalResult}
    */
-  function handleNotify(payload) {
+  function handleNotify(raw) {
+    const payload = normalizeNotify(raw);
     if (payload.type !== CODEX.turnCompleteType) {
       return unmatched(null, `not a turn-complete signal: ${payload.type ?? "(no type)"}`);
     }
@@ -452,10 +509,11 @@ export function createCodexAdapter(options = {}) {
   /**
    * The agent is waiting for a human. This is an explicit "human needed" entry,
    * not a silent wait and not a job result - the job stays running.
-   * @param {NotifyPayload} payload
+   * @param {RawNotifyPayload|NotifyPayload} raw
    * @returns {NotificationEntry}
    */
-  function handleNotification(payload) {
+  function handleNotification(raw) {
+    const payload = normalizeNotify(raw);
     const sessionId = payload.thread_id ?? payload.session_id ?? null;
     const agentId = resolveAgent(payload);
     /** @type {NotificationEntry} */
@@ -465,7 +523,9 @@ export function createCodexAdapter(options = {}) {
       sessionId,
       message: payload.message ?? "",
       at: now(),
-      payload,
+      // The raw record, not the normalised one: the panel shows what codex
+      // actually sent, and normalisation is only for the keys we read.
+      payload: raw,
     };
     notifications.push(entry);
     if (onNotification !== null) onNotification(entry);
