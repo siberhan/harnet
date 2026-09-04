@@ -1,12 +1,13 @@
 /**
  * Read-only web panel.
- * README: Web Arayuzu (Phase 1: read-only slice).
+ * README: Web Arayuzu (Phase 1: read-only slice + transcript view).
  *
  * Endpoints:
  * - GET /api/health: { status: "ok" }
- * - GET /api/agents: [{ id, role, status }, ...] from .harnet/agents/<id>/MEMORY.md
+ * - GET /api/agents: [{ id, role, status, lastMessage }, ...] from .harnet/agents/<id>/MEMORY.md
+ * - GET /api/agents/<id>/tail: last N lines parsed JSON (lastMessage + usage + skipped)
  * - GET /api/queue: [] (or injected queue state)
- * - GET /: simple single HTML page showing agent list + queue
+ * - GET /: simple single HTML page showing agent list (with last message) + queue
  *
  * Zero external dependencies: Node http/fs/path only.
  */
@@ -15,6 +16,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { emptySummary, parseLine, addEntry } from "../observe/transcript.js";
 
 export const PANEL_ROUTE = "/";
 
@@ -23,6 +25,7 @@ export const PANEL_ROUTE = "/";
  * @property {string} id
  * @property {string} role
  * @property {string} status
+ * @property {string|null} [lastMessage]
  */
 
 /**
@@ -40,6 +43,8 @@ export const PANEL_ROUTE = "/";
  * @property {QueueItem[] | (() => QueueItem[])} [queue]
  * @property {number} [port]
  * @property {string} [host]
+ * @property {Record<string, string>} [transcripts]
+ * @property {(agentId: string) => string|null} [getTranscriptPath]
  */
 
 /**
@@ -118,6 +123,91 @@ export function findAgentsDir(baseDir = process.cwd()) {
 }
 
 /**
+ * Resolves the path to an agent's transcript jsonl file.
+ * @param {string} agentsDir
+ * @param {string} agentId
+ * @param {ServerOptions} [options]
+ * @returns {string|null}
+ */
+export function findTranscriptPath(agentsDir, agentId, options = {}) {
+  if (typeof options.getTranscriptPath === "function") {
+    const custom = options.getTranscriptPath(agentId);
+    if (custom && fs.existsSync(custom)) return custom;
+  }
+  if (options.transcripts && typeof options.transcripts[agentId] === "string") {
+    const custom = options.transcripts[agentId];
+    if (fs.existsSync(custom)) return custom;
+  }
+
+  const agentDir = path.join(agentsDir, agentId);
+  if (!fs.existsSync(agentDir)) return null;
+
+  // 1. Direct transcript.jsonl
+  const direct = path.join(agentDir, "transcript.jsonl");
+  if (fs.existsSync(direct)) return direct;
+
+  // 2. Any .jsonl in the agent directory
+  try {
+    const files = fs.readdirSync(agentDir);
+    const jsonlFiles = files.filter((f) => f.endsWith(".jsonl"));
+    if (jsonlFiles.length > 0) {
+      const preferred = jsonlFiles.find((f) => f === "transcript.jsonl") ?? jsonlFiles[0];
+      return path.join(agentDir, preferred);
+    }
+  } catch {
+    // Ignore read errors
+  }
+
+  // 3. In agent's wt/ directory if present
+  const wtDirect = path.join(agentDir, "wt", "transcript.jsonl");
+  if (fs.existsSync(wtDirect)) return wtDirect;
+
+  return null;
+}
+
+/**
+ * Reads and parses the last N non-empty lines from a transcript file.
+ * @param {string} filePath
+ * @param {number} [n=50]
+ * @returns {{ lastMessage: string|null, usage: import("../observe/transcript.js").Usage, skipped: number, lines: number, parsed: number }}
+ */
+export function readTranscriptTail(filePath, n = 50) {
+  const summary = emptySummary();
+  if (!fs.existsSync(filePath)) {
+    return {
+      lastMessage: null,
+      usage: summary.usage,
+      skipped: 0,
+      lines: 0,
+      parsed: 0,
+    };
+  }
+
+  const content = fs.readFileSync(filePath, "utf8");
+  const rawLines = content.split(/\r?\n/).filter((line) => line.trim().length > 0);
+  const limit = Math.max(1, n);
+  const tail = rawLines.slice(-limit);
+
+  for (const [idx, raw] of tail.entries()) {
+    summary.lines += 1;
+    const entry = parseLine(raw, idx + 1);
+    if (entry === null) {
+      summary.skipped += 1;
+    } else {
+      addEntry(summary, entry);
+    }
+  }
+
+  return {
+    lastMessage: summary.lastMessage,
+    usage: summary.usage,
+    skipped: summary.skipped,
+    lines: summary.lines,
+    parsed: summary.parsed,
+  };
+}
+
+/**
  * Reads agent memory files from agents directory.
  * @param {string} agentsDir
  * @returns {AgentInfo[]}
@@ -176,6 +266,10 @@ export function renderHtml(agents, queue) {
               <span class="agent-status">${escapeHtml(a.status || "bilinmiyor")}</span>
             </div>
             <div class="agent-role">${escapeHtml(a.role || "-")}</div>
+            <div class="agent-last-message">
+              <span class="meta-label">Son Mesaj:</span>
+              <span class="message-text">${escapeHtml(a.lastMessage || "-")}</span>
+            </div>
           </div>
         `).join("")}
       </div>`;
@@ -270,6 +364,22 @@ export function renderHtml(agents, queue) {
       color: #cbd5e1;
     }
     .agent-role { color: var(--text-muted); font-size: 0.9rem; }
+    .agent-last-message {
+      margin-top: 0.5rem;
+      padding-top: 0.5rem;
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+    .meta-label {
+      font-weight: 600;
+      color: #cbd5e1;
+      margin-right: 0.35rem;
+    }
+    .message-text {
+      color: #e2e8f0;
+      word-break: break-word;
+    }
     .empty-state {
       background: var(--card-bg);
       border: 1px dashed var(--border);
@@ -382,6 +492,54 @@ export function createServer(options = {}) {
       return;
     }
 
+    // GET /api/agents/<id>/tail
+    const tailMatch = pathname.match(/^\/api\/agents\/([A-Za-z0-9_-]+)\/tail$/);
+    if (tailMatch) {
+      const agentId = tailMatch[1];
+      const transcriptPath = findTranscriptPath(agentsDir, agentId, options);
+      if (!transcriptPath || !fs.existsSync(transcriptPath)) {
+        const payload = JSON.stringify({
+          error: "Transcript not found",
+          agent: agentId,
+          message: `Transcript jsonl file not found for agent '${agentId}'`,
+        });
+        res.writeHead(404, {
+          "Content-Type": "application/json; charset=utf-8",
+          "Content-Length": Buffer.byteLength(payload),
+        });
+        if (method === "HEAD") {
+          res.end();
+        } else {
+          res.end(payload);
+        }
+        return;
+      }
+
+      const nParam = parsedUrl.searchParams.get("n") ?? parsedUrl.searchParams.get("lines");
+      const n = nParam ? parseInt(nParam, 10) : 50;
+      const limit = Number.isFinite(n) && n > 0 ? n : 50;
+
+      const tail = readTranscriptTail(transcriptPath, limit);
+      const payload = JSON.stringify({
+        agent: agentId,
+        lastMessage: tail.lastMessage,
+        usage: tail.usage,
+        skipped: tail.skipped,
+        lines: tail.lines,
+        parsed: tail.parsed,
+      });
+      res.writeHead(200, {
+        "Content-Type": "application/json; charset=utf-8",
+        "Content-Length": Buffer.byteLength(payload),
+      });
+      if (method === "HEAD") {
+        res.end();
+      } else {
+        res.end(payload);
+      }
+      return;
+    }
+
     if (pathname === "/api/queue") {
       const queue = getQueueState();
       const payload = JSON.stringify(queue);
@@ -399,8 +557,17 @@ export function createServer(options = {}) {
 
     if (pathname === "/" || pathname === "/index.html") {
       const agents = readAgents(agentsDir);
+      const enrichedAgents = agents.map((agent) => {
+        const transcriptPath = findTranscriptPath(agentsDir, agent.id, options);
+        let lastMessage = null;
+        if (transcriptPath && fs.existsSync(transcriptPath)) {
+          const tail = readTranscriptTail(transcriptPath, 50);
+          lastMessage = tail.lastMessage;
+        }
+        return { ...agent, lastMessage };
+      });
       const queue = getQueueState();
-      const html = renderHtml(agents, queue);
+      const html = renderHtml(enrichedAgents, queue);
       const payload = Buffer.from(html, "utf8");
       res.writeHead(200, {
         "Content-Type": "text/html; charset=utf-8",
