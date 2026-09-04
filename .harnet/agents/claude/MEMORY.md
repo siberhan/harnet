@@ -256,3 +256,37 @@ Left / for whoever picks this up:
   Out of my allowed paths; the map is drifting from the tree.
 - Codex side is unproven live: its notify carries no transcript path, so there
   the payload fallback is the ONLY source. The key aliases are in place for it.
+
+### claude-cleanup-1 (done)
+Closed both hand-over notes from claude-readreport-1.
+
+Changed:
+- scripts/live-e2e.mjs - deleted the inline readReport copy AND waitForFlush;
+  the driver now builds its reader with createReportReader from
+  src/service/report.js, so the live run exercises the shipping code path
+  instead of a second implementation. The evidence bookkeeping survives as
+  wrappers around the injected seams: `parse` records one line per DISTINCT
+  transcript state (a line per poll would be noise) and `onAttempt` records
+  source/reads/waitedMs, which now ride in evidence.json as `reportAttempt`
+  (replacing the old `transcriptFlush`).
+- src/MAP.js - added the two missing lines: src/service/control.js and
+  src/service/report.js. Only additions; the rule line at the top is untouched.
+
+Behavioural note: the wait moved from an async pre-wait before handleSignal to
+a synchronous poll inside it. Same budget (FLUSH_TIMEOUT env, 15s default in
+the script vs the service's 2s), same outcome - the script may block, and that
+is fine for a manual tool.
+
+Live re-verified (1 run, token HARNET-CLEANUP-1): Stop 30s after send-keys,
+`report source: transcript (1 read, 1ms waiting for the flush)`, report and
+wake-up both carry the token. 263/263 tests, `npm run check` clean.
+
+Left / for whoever picks this up:
+- Still nothing in bin/ or src/panel wires readReport; the adapter defaults to
+  null reports unless a caller passes createReportReader({ parse: parseTranscript }).
+  This is now the ONLY place the fix can still be missed.
+- The payload-fallback branch has never been seen live since the fix landed -
+  every run since has flushed in ~1ms. It is covered by test/report.test.js,
+  not by a live capture.
+- Codex still has no live e2e; its notify carries no transcript path, so there
+  the payload fallback is the only source.
