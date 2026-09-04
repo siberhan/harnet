@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Servis kimliği (launchctl list komutunda bu adla görünür) -->
+    <key>Label</key>
+    <string>com.hchk.harnet</string>
+
+    <!-- Çalıştırılacak komut ve argümanlar: node bin/harnet.js up -->
+    <!-- NOT: Kendi sisteminize göre 'node' ikili yolunu ve bin/harnet.js mutlak yolunu düzenleyiniz -->
+    <!-- Node yolunu bulmak için terminalde: which node -->
+    <key>ProgramArguments</key>
+    <array>
+        <!-- Apple Silicon (M1/M2/M3) Homebrew için genelde /opt/homebrew/bin/node, Intel için /usr/local/bin/node -->
+        <string>/opt/homebrew/bin/node</string>
+        <!-- Projenin yerel mutlak yolu: -->
+        <string>/Users/KULLANICI_ADI/Documents/Projects/harnet/bin/harnet.js</string>
+        <string>up</string>
+    </array>
+
+    <!-- Çalışma dizini: Harnet proje kök dizini (mutlak yol olmalıdır) -->
+    <key>WorkingDirectory</key>
+    <string>/Users/KULLANICI_ADI/Documents/Projects/harnet</string>
+
+    <!-- Ortam değişkenleri: PATH tanımlaması tmux ve git erişimi için kritiktir -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <!-- İsteğe bağlı port ayarı (varsayılan 3000) -->
+        <key>PORT</key>
+        <string>3000</string>
+    </dict>
+
+    <!-- Kullanıcı oturum açtığında servisi otomatik başlat -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Süreç beklenmedik şekilde çökerse otomatik olarak yeniden başlat -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Standart çıktı (stdout) günlüğü -->
+    <!-- NOT: KULLANICI_ADI kısmını kendi kullanıcı adınızla değiştiriniz -->
+    <key>StandardOutPath</key>
+    <string>/Users/KULLANICI_ADI/Library/Logs/harnet.log</string>
+
+    <!-- Standart hata (stderr) günlüğü -->
+    <key>StandardErrorPath</key>
+    <string>/Users/KULLANICI_ADI/Library/Logs/harnet.error.log</string>
+</dict>
+</plist>
