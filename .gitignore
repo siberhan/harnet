@@ -2,3 +2,4 @@
 node_modules/
 *.log
 .harnet/agents/*/wt/
+.workbuddy-ai/
