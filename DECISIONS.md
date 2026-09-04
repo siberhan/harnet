@@ -34,6 +34,11 @@ Log format: date + decision + why + revisit when. Short entries only.
 - Second agy lane allowed only for tiny independent tasks, own worktree + branch.
 - Revisit: if preview limits bite.
 
+## 2026-09-04: WebSocket via ws package allowed for panel attach (exception)
+- Why: writing our own socket protocol wastes weeks; ws is the standard wheel.
+- Scope: panel only. Service core stays zero-dependency.
+- Revisit: never, unless ws becomes unmaintained.
+
 ## 2026-09-04: src/MAP.js bans cross-imports between modules (temporary)
 - Why: keeps parallel agents from breaking each other's interfaces; shared shapes duplicated knowingly, guarded by contract tests.
 - Revisit: merge shared types first, then update MAP.js before unifying.
