@@ -40,3 +40,31 @@ Harnet mimarisinde her ajan kendi izole git worktree'sinde, tek yazarlı bir tmu
    tmux pipe-pane -t harnet-<agent-id> "cat > .harnet/agents/<agent-id>/pane.log"
    tmux send-keys -t harnet-<agent-id> "Merhaba, görevin..." Enter
    ```
+
+## 4. Sürekli Servis (launchd Daemon) Yönetimi
+
+Harnet kontrol servisi ve web paneli arka planda sürekli bir servis olarak `launchd` ile çalıştırılabilir (`node bin/harnet.js up`). Örnek şablon `examples/com.hchk.harnet.plist` dosyasında yer almaktadır.
+
+### Kurulum (Install)
+1. `examples/com.hchk.harnet.plist` içindeki dosya ve dizin yollarını (`node` yolu, proje dizini ve günlük yolları) kendi makinenize göre düzenleyin.
+2. Dosyayı macOS LaunchAgents dizinine kopyalayın ve servisi etkinleştirin:
+   ```bash
+   cp examples/com.hchk.harnet.plist ~/Library/LaunchAgents/
+   launchctl load ~/Library/LaunchAgents/com.hchk.harnet.plist
+   ```
+   *(Alternatif modern macOS: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.hchk.harnet.plist`)*
+
+### Günlükleri İzleme (Logs)
+Servisin standart çıktı ve hata akışını canlı izlemek için:
+```bash
+tail -f ~/Library/Logs/harnet.log
+tail -f ~/Library/Logs/harnet.error.log
+```
+
+### Kaldırma (Uninstall)
+Servisi durdurmak ve devre dışı bırakmak için:
+```bash
+launchctl unload ~/Library/LaunchAgents/com.hchk.harnet.plist
+rm ~/Library/LaunchAgents/com.hchk.harnet.plist
+```
+*(Alternatif modern macOS: `launchctl bootout gui/$(id -u)/com.hchk.harnet`)*
