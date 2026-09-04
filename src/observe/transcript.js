@@ -3,7 +3,12 @@
  *
  * Structural channel only: the harness writes one JSON object per line into its
  * own transcript jsonl (messages, tool_use blocks, usage counters). Harnet reads
- * job state, cost and reporting from here.
+ * job state and reporting from here.
+ *
+ * No cost: this module reports token counters only. Money is deliberately out of
+ * scope - it was estimated once (a placeholder price table), then narrowed to the
+ * harness-written costUSD, and is now gone entirely. Whoever needs a figure reads
+ * `usage` and applies their own price sheet.
  *
  * The visual channel (pane.log) is a raw byte stream for the human to watch.
  * It is never opened by this module and never feeds a decision. Nothing in this
@@ -15,24 +20,11 @@
  * so the last line can be half-written and older harness versions emit shapes we
  * do not know. A bad line is never fatal - it is skipped and counted, and the
  * caller gets the `skipped` counter back so a broken transcript is visible
- * instead of silently producing a too-cheap-looking summary.
+ * instead of silently producing a short-looking summary.
  */
 
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
-
-/**
- * Per-million-token prices used when the harness does not write a cost itself.
- * Matched by longest prefix, so dated model ids (claude-opus-4-20250514) hit the
- * same entry as the bare family name.
- * @type {ReadonlyArray<{ prefix: string, input: number, output: number, cacheWrite: number, cacheRead: number }>}
- */
-export const MODEL_PRICES = Object.freeze([
-  { prefix: "claude-opus", input: 15, output: 75, cacheWrite: 18.75, cacheRead: 1.5 },
-  { prefix: "claude-sonnet", input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.3 },
-  { prefix: "claude-haiku", input: 1, output: 5, cacheWrite: 1.25, cacheRead: 0.1 },
-  { prefix: "gpt", input: 2.5, output: 10, cacheWrite: 2.5, cacheRead: 0.25 },
-]);
 
 /**
  * @typedef {object} Usage
@@ -66,7 +58,6 @@ export const MODEL_PRICES = Object.freeze([
  * @property {ToolCall[]} toolCalls
  * @property {Record<string, number>} toolCounts
  * @property {Usage} usage
- * @property {number} cost
  * @property {number} lines number of non-empty lines seen
  * @property {number} parsed number of lines turned into an entry
  * @property {number} skipped number of lines that were unusable
@@ -86,7 +77,6 @@ export function emptySummary() {
     toolCalls: [],
     toolCounts: {},
     usage: emptyUsage(),
-    cost: 0,
     lines: 0,
     parsed: 0,
     skipped: 0,
@@ -117,40 +107,6 @@ function isRecord(value) {
  */
 function str(value) {
   return typeof value === "string" && value.length > 0 ? value : null;
-}
-
-/**
- * Price lookup by longest matching prefix.
- * @param {string|null} model
- * @returns {{ prefix: string, input: number, output: number, cacheWrite: number, cacheRead: number }|null}
- */
-export function priceFor(model) {
-  if (!model) return null;
-  const id = model.toLowerCase();
-  let best = null;
-  for (const entry of MODEL_PRICES) {
-    if (!id.startsWith(entry.prefix)) continue;
-    if (best === null || entry.prefix.length > best.prefix.length) best = entry;
-  }
-  return best;
-}
-
-/**
- * Cost in USD for one usage block. Unknown model = 0, never a guess.
- * @param {string|null} model
- * @param {Usage} usage
- * @returns {number}
- */
-export function estimateCost(model, usage) {
-  const price = priceFor(model);
-  if (!price) return 0;
-  return (
-    (usage.input * price.input +
-      usage.output * price.output +
-      usage.cacheWrite * price.cacheWrite +
-      usage.cacheRead * price.cacheRead) /
-    1_000_000
-  );
 }
 
 /**
@@ -213,7 +169,6 @@ function toolCallsOf(content, line) {
  * @property {string} text
  * @property {ToolCall[]} toolCalls
  * @property {Usage|null} usage
- * @property {number|null} cost cost written by the harness itself, if any
  * @property {string|null} sessionId
  * @property {string|null} timestamp
  */
@@ -245,7 +200,6 @@ export function parseLine(raw, line = 0) {
 
   const content = message ? message.content : value.content;
   const usage = readUsage(message?.usage) ?? readUsage(value.usage);
-  const cost = value.costUSD ?? value.cost_usd ?? message?.costUSD;
 
   return {
     line,
@@ -255,7 +209,6 @@ export function parseLine(raw, line = 0) {
     text: textOf(content),
     toolCalls: toolCallsOf(content, line),
     usage,
-    cost: typeof cost === "number" && Number.isFinite(cost) ? cost : null,
     sessionId: str(value.sessionId) ?? str(value.session_id),
     timestamp: str(value.timestamp) ?? str(value.ts),
   };
@@ -295,10 +248,6 @@ export function addEntry(summary, entry) {
     summary.usage.cacheWrite += entry.usage.cacheWrite;
     summary.usage.cacheRead += entry.usage.cacheRead;
     summary.usage.total += entry.usage.total;
-    // A cost written by the harness wins; we only price it ourselves otherwise.
-    summary.cost += entry.cost ?? estimateCost(entry.model, entry.usage);
-  } else if (entry.cost !== null) {
-    summary.cost += entry.cost;
   }
 
   return summary;
@@ -361,16 +310,15 @@ export async function readTranscript(filePath) {
 
 /**
  * Legacy helper kept for callers that already hold plain blocks (test/smoke).
- * @typedef {{ tokens?: number, cost?: number }} UsageBlock
+ * @typedef {{ tokens?: number }} UsageBlock
  * @param {UsageBlock[]} blocks
- * @returns {{ tokens: number, cost: number }}
+ * @returns {{ tokens: number }}
  */
 export function summarizeUsage(blocks) {
-  /** @type {{ tokens: number, cost: number }} */
-  const total = { tokens: 0, cost: 0 };
+  /** @type {{ tokens: number }} */
+  const total = { tokens: 0 };
   for (const b of blocks) {
     total.tokens += b.tokens ?? 0;
-    total.cost += b.cost ?? 0;
   }
   return total;
 }
