@@ -9,7 +9,7 @@
 - done: chatgpt-service-1 (gpt) - PR #4 merged, control service
 - done: claude-transcript-1 (claude) - PR #6 merged, jsonl reader
 - done: antigravity-bin-1 (agy lane 1) - PR #5 merged, status CLI
-- review: claude-costcut-1 (claude) - PR #7, cost estimation dropped
+- done: claude-costcut-1/2 (claude) - PR #7 merged, cost fully removed
 - done: antigravity-ci-1 (agy) - PR #1 merged
 - done: antigravity-docs-1 (agy lane 2) - PR #2 merged
 
@@ -17,7 +17,7 @@
 - workbuddy: BLOCKED, limit hit (was thought unlimited, it is limited)
 - antigravity: lane 1 idle, lane 2 idle
 - chatgpt: idle, quota spared
-- claude: review (PR #7)
+- claude: idle
 
 ## Merge order
 - PR per job. Independent jobs = separate PRs to main, either order.
