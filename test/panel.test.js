@@ -11,6 +11,8 @@ import {
   readAgents,
   findAgentsDir,
   renderHtml,
+  readTranscriptTail,
+  findTranscriptPath,
 } from "../src/panel/server.js";
 
 describe("panel: memory parser and reader", () => {
@@ -74,6 +76,80 @@ describe("panel: memory parser and reader", () => {
   });
 });
 
+describe("panel: transcript reader & resolver", () => {
+  it("readTranscriptTail returns empty summary for missing file", () => {
+    const tail = readTranscriptTail("/non/existent/file.jsonl");
+    assert.equal(tail.lastMessage, null);
+    assert.equal(tail.skipped, 0);
+    assert.equal(tail.lines, 0);
+  });
+
+  it("readTranscriptTail parses tail lines and extracts lastMessage, usage, skipped", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "harnet-tail-test-"));
+    try {
+      const filePath = path.join(tmp, "transcript.jsonl");
+      const lines = [
+        JSON.stringify({ type: "user", message: { role: "user", content: "hello" } }),
+        JSON.stringify({
+          type: "assistant",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "first reply" }],
+            usage: { input_tokens: 100, output_tokens: 20 },
+          },
+        }),
+        "invalid json line",
+        JSON.stringify({
+          type: "assistant",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "second reply" }],
+            usage: { input_tokens: 200, output_tokens: 40 },
+          },
+        }),
+      ].join("\n");
+      fs.writeFileSync(filePath, lines);
+
+      const all = readTranscriptTail(filePath, 10);
+      assert.equal(all.lastMessage, "second reply");
+      assert.equal(all.usage.input, 300);
+      assert.equal(all.usage.output, 60);
+      assert.equal(all.skipped, 1);
+      assert.equal(all.lines, 4);
+
+      // Limiting to last 1 line
+      const tail1 = readTranscriptTail(filePath, 1);
+      assert.equal(tail1.lastMessage, "second reply");
+      assert.equal(tail1.usage.input, 200);
+      assert.equal(tail1.skipped, 0);
+      assert.equal(tail1.lines, 1);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("findTranscriptPath locates transcript files", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "harnet-find-test-"));
+    try {
+      const agentDir = path.join(tmp, "alpha");
+      fs.mkdirSync(agentDir);
+      assert.equal(findTranscriptPath(tmp, "alpha"), null);
+
+      const transcriptFile = path.join(agentDir, "transcript.jsonl");
+      fs.writeFileSync(transcriptFile, "{}\n");
+      assert.equal(findTranscriptPath(tmp, "alpha"), transcriptFile);
+
+      // Custom option
+      assert.equal(
+        findTranscriptPath(tmp, "custom", { transcripts: { custom: transcriptFile } }),
+        transcriptFile
+      );
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("panel: HTML rendering", () => {
   it("renders empty state when no agents or queue items", () => {
     const html = renderHtml([], []);
@@ -94,6 +170,16 @@ describe("panel: HTML rendering", () => {
     assert.ok(html.includes("role &amp; task"));
     assert.ok(html.includes("job-101"));
     assert.ok(html.includes("check &lt;alert&gt;"));
+    assert.ok(html.includes("Son Mesaj:"));
+  });
+
+  it("renders lastMessage when available on agent card", () => {
+    const agents = [
+      { id: "agent-1", role: "worker", status: "busy", lastMessage: "Task completed successfully" },
+    ];
+    const html = renderHtml(agents, []);
+    assert.ok(html.includes("Son Mesaj:"));
+    assert.ok(html.includes("Task completed successfully"));
   });
 });
 
@@ -176,6 +262,111 @@ describe("panel: HTTP server on real port", () => {
     }
   });
 
+  it("serves GET /api/agents/:id/tail with lastMessage, usage, skipped", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "harnet-tail-server-"));
+    try {
+      const agentDir = path.join(tmp, "bot-y");
+      fs.mkdirSync(agentDir);
+      fs.writeFileSync(
+        path.join(agentDir, "MEMORY.md"),
+        "# bot-y MEMORY\nRole: bot\nStatus: busy\n"
+      );
+      const transcriptLines = [
+        JSON.stringify({
+          type: "assistant",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Done with task" }],
+            usage: { input_tokens: 50, output_tokens: 25 },
+          },
+        }),
+      ].join("\n");
+      fs.writeFileSync(path.join(agentDir, "transcript.jsonl"), transcriptLines);
+
+      const { port, close } = await start({ port: 0, agentsDir: tmp });
+      try {
+        const res = await fetch(`http://127.0.0.1:${port}/api/agents/bot-y/tail`);
+        assert.equal(res.status, 200);
+        assert.equal(res.headers.get("content-type"), "application/json; charset=utf-8");
+        const data = await res.json();
+        assert.equal(data.agent, "bot-y");
+        assert.equal(data.lastMessage, "Done with task");
+        assert.equal(data.usage.total, 75);
+        assert.equal(data.skipped, 0);
+
+        // HEAD request
+        const headRes = await fetch(`http://127.0.0.1:${port}/api/agents/bot-y/tail`, { method: "HEAD" });
+        assert.equal(headRes.status, 200);
+        const headText = await headRes.text();
+        assert.equal(headText, "");
+
+        // Tail with n query
+        const nRes = await fetch(`http://127.0.0.1:${port}/api/agents/bot-y/tail?n=10`);
+        assert.equal(nRes.status, 200);
+        const nData = await nRes.json();
+        assert.equal(nData.lastMessage, "Done with task");
+      } finally {
+        await close();
+      }
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("returns 404 with explanatory body when transcript does not exist", async () => {
+    const { port, close } = await start({ port: 0 });
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/agents/non-existent-agent-xyz/tail`);
+      assert.equal(res.status, 404);
+      assert.equal(res.headers.get("content-type"), "application/json; charset=utf-8");
+      const data = await res.json();
+      assert.equal(data.error, "Transcript not found");
+      assert.ok(data.message.includes("non-existent-agent-xyz"));
+    } finally {
+      await close();
+    }
+  });
+
+  it("returns 405 for POST /api/agents/:id/tail", async () => {
+    const { port, close } = await start({ port: 0 });
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/agents/any-agent/tail`, { method: "POST" });
+      assert.equal(res.status, 405);
+      assert.equal(res.headers.get("allow"), "GET, HEAD");
+    } finally {
+      await close();
+    }
+  });
+
+  it("serves GET / showing 'Son Mesaj' on agent cards", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "harnet-card-msg-"));
+    try {
+      const agentDir = path.join(tmp, "bot-z");
+      fs.mkdirSync(agentDir);
+      fs.writeFileSync(path.join(agentDir, "MEMORY.md"), "# bot-z MEMORY\nRole: worker\nStatus: idle\n");
+      fs.writeFileSync(
+        path.join(agentDir, "transcript.jsonl"),
+        JSON.stringify({
+          type: "assistant",
+          message: { role: "assistant", content: [{ type: "text", text: "Ajan hazır" }] },
+        }) + "\n"
+      );
+
+      const { port, close } = await start({ port: 0, agentsDir: tmp });
+      try {
+        const res = await fetch(`http://127.0.0.1:${port}/`);
+        assert.equal(res.status, 200);
+        const html = await res.text();
+        assert.ok(html.includes("Son Mesaj:"));
+        assert.ok(html.includes("Ajan hazır"));
+      } finally {
+        await close();
+      }
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("serves GET /api/queue (empty array by default)", async () => {
     const { port, close } = await start({ port: 0 });
     try {
@@ -218,6 +409,7 @@ describe("panel: HTTP server on real port", () => {
       assert.ok(html.includes("Harnet Kontrol Paneli"));
       assert.ok(html.includes("antigravity"));
       assert.ok(html.includes("İş Kuyruğu"));
+      assert.ok(html.includes("Son Mesaj:"));
     } finally {
       await close();
     }
@@ -231,6 +423,7 @@ describe("panel: HTTP server on real port", () => {
       assert.equal(res.headers.get("content-type"), "text/html; charset=utf-8");
       const html = await res.text();
       assert.ok(html.includes("Harnet Kontrol Paneli"));
+      assert.ok(html.includes("Son Mesaj:"));
     } finally {
       await close();
     }
