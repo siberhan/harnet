@@ -5,16 +5,19 @@
 - done: workbuddy-queue-1 (wb) - queue, busy, result groups, 48 tests
 - done: workbuddy-git-1 (wb) - worktree manager + delivery merge, 89 tests
 - done: antigravity-panel-1 (agy) - read-only panel, 67 tests
+- open: opencode-service-1 (opencode) - control service wiring, branch harnet/opencode
+- open: claude-transcript-1 (claude) - real jsonl reader, branch harnet/claude
+- open: antigravity-bin-1 (agy lane 1) - bin/harnet status CLI, branch harnet/antigravity
 - review: chatgpt-adapters-1 (gpt) - PR #3, adapters done 156/156
 - review: antigravity-ci-1 (agy) - PR #1, CI workflow
 - review: antigravity-docs-1 (agy lane 2) - PR #2, docs only
 
 ## Board + limits
 - workbuddy: BLOCKED, limit hit (was thought unlimited, it is limited)
-- opencode: idle, core successor (muse-spark 1.3)
-- antigravity: lane 1 review (PR #1), lane 2 review (PR #2)
+- opencode: busy (opencode-service-1)
+- antigravity: lane 1 busy (antigravity-bin-1) after PR #1 merges, lane 2 review (PR #2)
 - chatgpt: review (PR #3), quota spared otherwise
-- claude: idle, tiny tasks only until limit renews
+- claude: busy (claude-transcript-1), limit renewed
 
 ## Merge order
 - PR per job. Independent jobs = separate PRs to main, either order.
