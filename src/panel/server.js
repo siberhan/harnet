@@ -1,21 +1,24 @@
 /**
- * Read-only web panel.
- * README: Web Arayuzu (Phase 1: read-only slice + transcript view).
+ * Web panel with read-only view and live terminal attachment.
+ * README: Web Arayuzu (Phase 1: read-only slice + transcript view; Phase 2: live xterm.js attach).
  *
  * Endpoints:
  * - GET /api/health: { status: "ok" }
  * - GET /api/agents: [{ id, role, status, lastMessage }, ...] from .harnet/agents/<id>/MEMORY.md
  * - GET /api/agents/<id>/tail: last N lines parsed JSON (lastMessage + usage + skipped)
  * - GET /api/queue: [] (or injected queue state)
- * - GET /: simple single HTML page showing agent list (with last message) + queue
+ * - GET /: single HTML page showing agent list (with last message & connect button) + queue
+ * - WS /api/agents/<id>/term: live tmux terminal attach (pipe-pane tail + send-keys relay)
  *
- * Zero external dependencies: Node http/fs/path only.
+ * Dependencies: Node builtins (http, fs, path, child_process) + ws for terminal WebSocket.
  */
 
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
+import { WebSocketServer, WebSocket } from "ws";
 import { emptySummary, parseLine, addEntry } from "../observe/transcript.js";
 
 export const PANEL_ROUTE = "/";
@@ -38,6 +41,10 @@ export const PANEL_ROUTE = "/";
  */
 
 /**
+ * @typedef {(argv: string[], opts?: { cwd?: string }) => { status: number|null, stdout: string, stderr: string }} CommandRunner
+ */
+
+/**
  * @typedef {object} ServerOptions
  * @property {string} [agentsDir]
  * @property {QueueItem[] | (() => QueueItem[])} [queue]
@@ -45,7 +52,229 @@ export const PANEL_ROUTE = "/";
  * @property {string} [host]
  * @property {Record<string, string>} [transcripts]
  * @property {(agentId: string) => string|null} [getTranscriptPath]
+ * @property {Record<string, string>} [paneLogs]
+ * @property {(agentId: string) => string|null} [getPaneLogPath]
+ * @property {(agentId: string) => string} [sessionName]
+ * @property {CommandRunner} [runner]
+ * @property {CommandRunner} [run]
+ * @property {number} [tailPollIntervalMs]
  */
+
+/**
+ * Default runner executing process via spawnSync.
+ * @type {CommandRunner}
+ */
+export function spawnRunner(argv, opts = {}) {
+  if (!argv || argv.length === 0) {
+    return { status: 1, stdout: "", stderr: "empty command" };
+  }
+  const cwd = opts.cwd ?? process.cwd();
+  try {
+    const res = spawnSync(argv[0], argv.slice(1), {
+      cwd,
+      encoding: "utf8",
+    });
+    return {
+      status: res.status,
+      stdout: res.stdout ?? "",
+      stderr: res.stderr ?? (res.error ? res.error.message : ""),
+    };
+  } catch (err) {
+    return { status: 1, stdout: "", stderr: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * Resolves standard tmux session name for an agent.
+ * @param {string} agentId
+ * @returns {string}
+ */
+export function sessionName(agentId) {
+  return `harnet-${agentId}`;
+}
+
+/**
+ * Sends keystrokes to a tmux session via send-keys.
+ * Supports string literals, key sequences (Enter, BSpace, Up, Down, Left, Right, C-c, C-d),
+ * and structured JSON envelopes.
+ *
+ * @param {string} session
+ * @param {unknown} data
+ * @param {CommandRunner} [runner]
+ * @returns {void}
+ */
+export function sendTmuxKeys(session, data, runner = spawnRunner) {
+  if (data === undefined || data === null) return;
+  let text = typeof data === "string" ? data : String(data);
+
+  // Check for structured JSON payload
+  if (text.startsWith("{") && text.endsWith("}")) {
+    try {
+      const parsed = JSON.parse(text);
+      if (Array.isArray(parsed.args)) {
+        runner(["tmux", "send-keys", "-t", session, ...parsed.args]);
+        return;
+      }
+      if (typeof parsed.keys === "string") {
+        text = parsed.keys;
+      } else if (typeof parsed.input === "string") {
+        text = parsed.input;
+      } else if (typeof parsed.data === "string") {
+        text = parsed.data;
+      }
+    } catch {
+      // Treat as raw text
+    }
+  }
+
+  if (text.length === 0) return;
+
+  // Single key / control code shortcuts
+  if (text === "\r" || text === "\n" || text === "\r\n") {
+    runner(["tmux", "send-keys", "-t", session, "Enter"]);
+    return;
+  }
+  if (text === "\x7f" || text === "\x08") {
+    runner(["tmux", "send-keys", "-t", session, "BSpace"]);
+    return;
+  }
+  if (text === "\x1b[A") {
+    runner(["tmux", "send-keys", "-t", session, "Up"]);
+    return;
+  }
+  if (text === "\x1b[B") {
+    runner(["tmux", "send-keys", "-t", session, "Down"]);
+    return;
+  }
+  if (text === "\x1b[C") {
+    runner(["tmux", "send-keys", "-t", session, "Right"]);
+    return;
+  }
+  if (text === "\x1b[D") {
+    runner(["tmux", "send-keys", "-t", session, "Left"]);
+    return;
+  }
+  if (text === "\x03") {
+    runner(["tmux", "send-keys", "-t", session, "C-c"]);
+    return;
+  }
+  if (text === "\x04") {
+    runner(["tmux", "send-keys", "-t", session, "C-d"]);
+    return;
+  }
+
+  // If text ends with Enter / newline, type the text then press Enter
+  if (text.endsWith("\r") || text.endsWith("\n")) {
+    const trimmed = text.replace(/[\r\n]+$/, "");
+    if (trimmed.length > 0) {
+      runner(["tmux", "send-keys", "-t", session, "-l", "--", trimmed]);
+    }
+    runner(["tmux", "send-keys", "-t", session, "Enter"]);
+    return;
+  }
+
+  // Literal send
+  runner(["tmux", "send-keys", "-t", session, "-l", "--", text]);
+}
+
+/**
+ * Resolves the path to an agent's pane.log file.
+ * @param {string} agentsDir
+ * @param {string} agentId
+ * @param {ServerOptions} [options]
+ * @returns {string}
+ */
+export function findPaneLogPath(agentsDir, agentId, options = {}) {
+  if (typeof options.getPaneLogPath === "function") {
+    const custom = options.getPaneLogPath(agentId);
+    if (custom) return custom;
+  }
+  if (options.paneLogs && typeof options.paneLogs[agentId] === "string") {
+    return options.paneLogs[agentId];
+  }
+
+  const agentDir = path.join(agentsDir, agentId);
+  const direct = path.join(agentDir, "pane.log");
+  if (fs.existsSync(direct)) return direct;
+
+  const wtDirect = path.join(agentDir, "wt", "pane.log");
+  if (fs.existsSync(wtDirect)) return wtDirect;
+
+  return direct;
+}
+
+/**
+ * Tails a pane log file and pipes chunks to a WebSocket client.
+ * @param {string} filePath
+ * @param {WebSocket} ws
+ * @param {number} [pollIntervalMs=50]
+ * @returns {() => void} cleanup function
+ */
+export function attachPaneTail(filePath, ws, pollIntervalMs = 50) {
+  let offset = 0;
+  let closed = false;
+  /** @type {fs.FSWatcher|null} */
+  let watcher = null;
+
+  function readNewBytes() {
+    if (closed || ws.readyState !== WebSocket.OPEN) return;
+    try {
+      if (!fs.existsSync(filePath)) return;
+      const stat = fs.statSync(filePath);
+      if (stat.size > offset) {
+        const stream = fs.createReadStream(filePath, { start: offset, end: stat.size - 1 });
+        offset = stat.size;
+        stream.on("data", (chunk) => {
+          if (!closed && ws.readyState === WebSocket.OPEN) {
+            ws.send(typeof chunk === "string" ? chunk : chunk.toString("utf8"));
+          }
+        });
+      } else if (stat.size < offset) {
+        // File was truncated
+        offset = 0;
+        const stream = fs.createReadStream(filePath, { start: 0, end: stat.size - 1 });
+        offset = stat.size;
+        stream.on("data", (chunk) => {
+          if (!closed && ws.readyState === WebSocket.OPEN) {
+            ws.send(typeof chunk === "string" ? chunk : chunk.toString("utf8"));
+          }
+        });
+      }
+
+      if (!watcher && fs.existsSync(filePath)) {
+        try {
+          watcher = fs.watch(filePath, () => readNewBytes());
+        } catch {
+          // Ignored if platform does not support fs.watch
+        }
+      }
+    } catch {
+      // Ignore transient file read errors
+    }
+  }
+
+  // Initial read of existing bytes
+  readNewBytes();
+
+  // Polling fallback ensures updates are caught reliably
+  const interval = setInterval(readNewBytes, pollIntervalMs);
+
+  function cleanup() {
+    closed = true;
+    clearInterval(interval);
+    if (watcher) {
+      try {
+        watcher.close();
+      } catch {}
+      watcher = null;
+    }
+  }
+
+  ws.on("close", cleanup);
+  ws.on("error", cleanup);
+
+  return cleanup;
+}
 
 /**
  * Parses an agent's MEMORY.md file content.
@@ -250,7 +479,7 @@ function escapeHtml(str) {
 }
 
 /**
- * Renders the single-page HTML for agents and queue.
+ * Renders the single-page HTML for agents (with xterm.js attach) and queue.
  * @param {AgentInfo[]} agents
  * @param {QueueItem[]} queue
  * @returns {string}
@@ -262,13 +491,26 @@ export function renderHtml(agents, queue) {
         ${agents.map((a) => `
           <div class="card" data-agent-id="${escapeHtml(a.id)}">
             <div class="card-header">
-              <span class="agent-id">${escapeHtml(a.id)}</span>
-              <span class="agent-status">${escapeHtml(a.status || "bilinmiyor")}</span>
+              <div class="agent-title-row">
+                <span class="agent-id">${escapeHtml(a.id)}</span>
+                <span class="agent-status">${escapeHtml(a.status || "bilinmiyor")}</span>
+              </div>
+              <button class="btn-attach" data-agent-id="${escapeHtml(a.id)}" onclick="toggleTerminal('${escapeHtml(a.id)}')">Bağlan</button>
             </div>
             <div class="agent-role">${escapeHtml(a.role || "-")}</div>
             <div class="agent-last-message">
               <span class="meta-label">Son Mesaj:</span>
               <span class="message-text">${escapeHtml(a.lastMessage || "-")}</span>
+            </div>
+            <div class="terminal-container" id="terminal-container-${escapeHtml(a.id)}" style="display: none;">
+              <div class="terminal-toolbar">
+                <span class="terminal-title">Canlı Terminal: <code>${escapeHtml(a.id)}</code></span>
+                <div class="terminal-actions">
+                  <span class="term-status" id="term-status-${escapeHtml(a.id)}">Bağlantı bekleniyor...</span>
+                  <button class="btn-close-term" onclick="closeTerminal('${escapeHtml(a.id)}')">Kapat</button>
+                </div>
+              </div>
+              <div class="xterm-box" id="xterm-${escapeHtml(a.id)}"></div>
             </div>
           </div>
         `).join("")}
@@ -303,6 +545,8 @@ export function renderHtml(agents, queue) {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Harnet Kontrol Paneli</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css" />
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
   <style>
     :root {
       --bg: #0f172a;
@@ -352,8 +596,13 @@ export function renderHtml(agents, queue) {
     .card-header {
       display: flex;
       justify-content: space-between;
-      align-items: baseline;
+      align-items: center;
       margin-bottom: 0.5rem;
+    }
+    .agent-title-row {
+      display: flex;
+      align-items: baseline;
+      gap: 0.5rem;
     }
     .agent-id { font-size: 1.1rem; font-weight: 600; color: var(--accent); }
     .agent-status {
@@ -362,6 +611,24 @@ export function renderHtml(agents, queue) {
       border-radius: 4px;
       background: rgba(255, 255, 255, 0.08);
       color: #cbd5e1;
+    }
+    .btn-attach {
+      background: #0284c7;
+      color: #ffffff;
+      border: 1px solid #0369a1;
+      padding: 0.3rem 0.75rem;
+      border-radius: 4px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s ease-in-out;
+    }
+    .btn-attach:hover {
+      background: #0369a1;
+    }
+    .btn-attach:focus {
+      outline: 2px solid var(--accent);
+      outline-offset: 1px;
     }
     .agent-role { color: var(--text-muted); font-size: 0.9rem; }
     .agent-last-message {
@@ -379,6 +646,54 @@ export function renderHtml(agents, queue) {
     .message-text {
       color: #e2e8f0;
       word-break: break-word;
+    }
+    .terminal-container {
+      margin-top: 0.75rem;
+      background: #090d16;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.75rem;
+      overflow: hidden;
+    }
+    .terminal-toolbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-bottom: 0.5rem;
+      margin-bottom: 0.5rem;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      font-size: 0.8rem;
+    }
+    .terminal-title {
+      font-weight: 600;
+      color: var(--accent);
+    }
+    .terminal-actions {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .term-status {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+    .btn-close-term {
+      background: #dc2626;
+      color: #fff;
+      border: none;
+      border-radius: 3px;
+      padding: 0.15rem 0.45rem;
+      font-size: 0.75rem;
+      cursor: pointer;
+    }
+    .btn-close-term:hover {
+      background: #b91c1c;
+    }
+    .xterm-box {
+      width: 100%;
+      min-height: 200px;
+      background: #090d16;
+      border-radius: 4px;
     }
     .empty-state {
       background: var(--card-bg);
@@ -424,17 +739,119 @@ export function renderHtml(agents, queue) {
       ${queueHtml}
     </section>
   </div>
+
+  <script>
+    const activeTerminals = {};
+
+    function toggleTerminal(agentId) {
+      const container = document.getElementById("terminal-container-" + agentId);
+      const btn = document.querySelector('.btn-attach[data-agent-id="' + agentId + '"]');
+      if (!container) return;
+      if (container.style.display === "none" || !container.style.display) {
+        container.style.display = "block";
+        if (btn) btn.textContent = "Bağlantıyı Kes";
+        openTerminal(agentId);
+      } else {
+        closeTerminal(agentId);
+      }
+    }
+
+    function openTerminal(agentId) {
+      if (activeTerminals[agentId]) return;
+      const statusEl = document.getElementById("term-status-" + agentId);
+      const boxEl = document.getElementById("xterm-" + agentId);
+      if (!boxEl) return;
+      boxEl.innerHTML = "";
+
+      if (typeof Terminal === "undefined") {
+        if (statusEl) {
+          statusEl.textContent = "Hata: xterm.js CDN yüklenemedi";
+          statusEl.style.color = "#f87171";
+        }
+        return;
+      }
+
+      const term = new Terminal({
+        cursorBlink: true,
+        fontSize: 13,
+        fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+        theme: {
+          background: "#090d16",
+          foreground: "#f8fafc"
+        }
+      });
+
+      term.open(boxEl);
+
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      const wsUrl = proto + "//" + location.host + "/api/agents/" + encodeURIComponent(agentId) + "/term";
+      const ws = new WebSocket(wsUrl);
+
+      activeTerminals[agentId] = { term: term, ws: ws };
+
+      ws.onopen = function () {
+        if (statusEl) {
+          statusEl.textContent = "Bağlandı";
+          statusEl.style.color = "#4ade80";
+        }
+        term.focus();
+      };
+
+      ws.onmessage = function (ev) {
+        term.write(ev.data);
+      };
+
+      term.onData(function (data) {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(data);
+        }
+      });
+
+      ws.onerror = function () {
+        if (statusEl) {
+          statusEl.textContent = "Bağlantı hatası";
+          statusEl.style.color = "#f87171";
+        }
+      };
+
+      ws.onclose = function () {
+        if (statusEl) {
+          statusEl.textContent = "Bağlantı kapandı";
+          statusEl.style.color = "#94a3b8";
+        }
+        term.write("\\r\\n\\x1b[33m[Bağlantı kapandı]\\x1b[0m\\r\\n");
+        delete activeTerminals[agentId];
+        const btn = document.querySelector('.btn-attach[data-agent-id="' + agentId + '"]');
+        if (btn) btn.textContent = "Bağlan";
+      };
+    }
+
+    function closeTerminal(agentId) {
+      const session = activeTerminals[agentId];
+      if (session) {
+        if (session.ws) session.ws.close();
+        if (session.term) session.term.dispose();
+        delete activeTerminals[agentId];
+      }
+      const container = document.getElementById("terminal-container-" + agentId);
+      if (container) container.style.display = "none";
+      const btn = document.querySelector('.btn-attach[data-agent-id="' + agentId + '"]');
+      if (btn) btn.textContent = "Bağlan";
+    }
+  </script>
 </body>
 </html>`;
 }
 
 /**
- * Creates the HTTP server instance.
+ * Creates the HTTP and WebSocket server instance.
  * @param {ServerOptions} [options]
  * @returns {http.Server}
  */
 export function createServer(options = {}) {
   const agentsDir = options.agentsDir ?? findAgentsDir();
+  const runner = options.runner ?? options.run ?? spawnRunner;
+  const pollIntervalMs = options.tailPollIntervalMs ?? 50;
 
   /** @returns {QueueItem[]} */
   function getQueueState() {
@@ -593,6 +1010,53 @@ export function createServer(options = {}) {
     }
   });
 
+  // WebSocket Server setup
+  const wss = new WebSocketServer({ noServer: true });
+
+  server.on("upgrade", (req, socket, head) => {
+    const parsedUrl = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    const termMatch = parsedUrl.pathname.match(/^\/api\/agents\/([A-Za-z0-9_-]+)\/term\/?$/);
+    if (!termMatch) {
+      socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+
+    const agentId = termMatch[1];
+    wss.handleUpgrade(req, socket, head, (/** @type {WebSocket} */ ws) => {
+      wss.emit("connection", ws, req, agentId);
+    });
+  });
+
+  wss.on("connection", (/** @type {WebSocket} */ ws, /** @type {http.IncomingMessage} */ _req, /** @type {unknown} */ agentId) => {
+    const targetAgentId = typeof agentId === "string" ? agentId : "default";
+    const logPath = findPaneLogPath(agentsDir, targetAgentId, options);
+    const session = options.sessionName ? options.sessionName(targetAgentId) : sessionName(targetAgentId);
+
+    // Stream pane log tail
+    attachPaneTail(logPath, ws, pollIntervalMs);
+
+    // Relay incoming keys via send-keys
+    ws.on("message", (/** @type {any} */ data) => {
+      try {
+        sendTmuxKeys(session, data, runner);
+      } catch {
+        // Runner failure (e.g. session not found) should not crash the server
+      }
+    });
+  });
+
+  /** @type {any} */ (server).wss = wss;
+
+  server.on("close", () => {
+    for (const client of wss.clients) {
+      try {
+        client.terminate();
+      } catch {}
+    }
+    wss.close();
+  });
+
   return server;
 }
 
@@ -614,7 +1078,20 @@ export function start(options = {}) {
       /** @returns {Promise<void>} */
       const close = () =>
         new Promise((res, rej) => {
-          server.close((err) => (err ? rej(err) : res()));
+          /** @type {any} */
+          const wss = /** @type {any} */ (server).wss;
+          if (wss) {
+            for (const client of wss.clients) {
+              try {
+                client.terminate();
+              } catch {}
+            }
+            wss.close(() => {
+              server.close((err) => (err ? rej(err) : res()));
+            });
+          } else {
+            server.close((err) => (err ? rej(err) : res()));
+          }
         });
       resolve({ server, port: actualPort, close });
     });
