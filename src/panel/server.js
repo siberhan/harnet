@@ -1,7 +1,467 @@
-/** Panel stub. README: Web Arayuzu. Serves agent tree + queue, xterm.js attach, permission queue, cost view. HTTP + WebSocket. */
+/**
+ * Read-only web panel.
+ * README: Web Arayuzu (Phase 1: read-only slice).
+ *
+ * Endpoints:
+ * - GET /api/health: { status: "ok" }
+ * - GET /api/agents: [{ id, role, status }, ...] from .harnet/agents/<id>/MEMORY.md
+ * - GET /api/queue: [] (or injected queue state)
+ * - GET /: simple single HTML page showing agent list + queue
+ *
+ * Zero external dependencies: Node http/fs/path only.
+ */
+
+import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 export const PANEL_ROUTE = "/";
 
-export function start() {
-  throw new Error("panel not implemented (phase 1 step 5)");
+/**
+ * @typedef {object} AgentInfo
+ * @property {string} id
+ * @property {string} role
+ * @property {string} status
+ */
+
+/**
+ * @typedef {object} QueueItem
+ * @property {string} id
+ * @property {string} [prompt]
+ * @property {string} [agent]
+ * @property {string} [status]
+ * @property {number} [createdAt]
+ */
+
+/**
+ * @typedef {object} ServerOptions
+ * @property {string} [agentsDir]
+ * @property {QueueItem[] | (() => QueueItem[])} [queue]
+ * @property {number} [port]
+ * @property {string} [host]
+ */
+
+/**
+ * Parses an agent's MEMORY.md file content.
+ * @param {string} content
+ * @param {string} fallbackId
+ * @returns {AgentInfo}
+ */
+export function parseAgentMemory(content, fallbackId) {
+  let id = fallbackId;
+  let role = "";
+  let status = "";
+
+  const lines = content.split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!id || id === fallbackId) {
+      const headerMatch = trimmed.match(/^#\s+([A-Za-z0-9_-]+)\s+MEMORY/i);
+      if (headerMatch) {
+        id = headerMatch[1];
+      }
+    }
+    const roleMatch = trimmed.match(/^Role:\s*(.*)$/i);
+    if (roleMatch && !role) {
+      role = roleMatch[1].trim();
+    }
+    const statusMatch = trimmed.match(/^Status:\s*(.*)$/i);
+    if (statusMatch && !status) {
+      status = statusMatch[1].trim();
+    }
+  }
+
+  return { id, role, status };
+}
+
+/**
+ * Resolves the directory holding agent subdirectories (.harnet/agents).
+ * Checks explicit env var, worktree parent structure, or walks up from baseDir.
+ * @param {string} [baseDir]
+ * @returns {string}
+ */
+export function findAgentsDir(baseDir = process.cwd()) {
+  if (process.env.HARNET_AGENTS_DIR) {
+    return path.resolve(process.env.HARNET_AGENTS_DIR);
+  }
+
+  // 1. When cwd is inside a worktree: .harnet/agents/<id>/wt -> ../.. is .harnet/agents
+  const parentAgents = path.resolve(baseDir, "..", "..");
+  if (
+    path.basename(parentAgents) === "agents" &&
+    path.basename(path.resolve(parentAgents, "..")) === ".harnet" &&
+    fs.existsSync(parentAgents)
+  ) {
+    return parentAgents;
+  }
+
+  // 2. Direct local .harnet/agents
+  const localAgents = path.resolve(baseDir, ".harnet", "agents");
+  if (fs.existsSync(localAgents)) {
+    return localAgents;
+  }
+
+  // 3. Search upwards
+  let curr = path.resolve(baseDir);
+  while (true) {
+    const candidate = path.join(curr, ".harnet", "agents");
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+    const parent = path.dirname(curr);
+    if (parent === curr) break;
+    curr = parent;
+  }
+
+  return localAgents;
+}
+
+/**
+ * Reads agent memory files from agents directory.
+ * @param {string} agentsDir
+ * @returns {AgentInfo[]}
+ */
+export function readAgents(agentsDir) {
+  if (!fs.existsSync(agentsDir)) {
+    return [];
+  }
+  const entries = fs.readdirSync(agentsDir, { withFileTypes: true });
+  /** @type {AgentInfo[]} */
+  const agents = [];
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const memoryPath = path.join(agentsDir, entry.name, "MEMORY.md");
+    if (fs.existsSync(memoryPath)) {
+      try {
+        const content = fs.readFileSync(memoryPath, "utf8");
+        agents.push(parseAgentMemory(content, entry.name));
+      } catch {
+        // Skip unreadable files
+      }
+    }
+  }
+
+  return agents.sort((a, b) => a.id.localeCompare(b.id));
+}
+
+/**
+ * @param {string} [str]
+ * @returns {string}
+ */
+function escapeHtml(str) {
+  return String(str ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+/**
+ * Renders the single-page HTML for agents and queue.
+ * @param {AgentInfo[]} agents
+ * @param {QueueItem[]} queue
+ * @returns {string}
+ */
+export function renderHtml(agents, queue) {
+  const agentsHtml = agents.length === 0
+    ? `<div class="empty-state">Henüz kayıtlı ajan bulunmuyor.</div>`
+    : `<div class="card-list">
+        ${agents.map((a) => `
+          <div class="card" data-agent-id="${escapeHtml(a.id)}">
+            <div class="card-header">
+              <span class="agent-id">${escapeHtml(a.id)}</span>
+              <span class="agent-status">${escapeHtml(a.status || "bilinmiyor")}</span>
+            </div>
+            <div class="agent-role">${escapeHtml(a.role || "-")}</div>
+          </div>
+        `).join("")}
+      </div>`;
+
+  const queueHtml = queue.length === 0
+    ? `<div class="empty-state">Kuyruk boş (0 iş bekliyor).</div>`
+    : `<table class="queue-table">
+        <thead>
+          <tr>
+            <th>İş ID</th>
+            <th>Hedef Ajan</th>
+            <th>Durum</th>
+            <th>İstem</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${queue.map((q) => `
+            <tr>
+              <td><code>${escapeHtml(q.id)}</code></td>
+              <td>${escapeHtml(q.agent ?? "-")}</td>
+              <td><span class="badge badge-sm">${escapeHtml(q.status ?? "queued")}</span></td>
+              <td>${escapeHtml(q.prompt ?? "-")}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>`;
+
+  return `<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Harnet Kontrol Paneli</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card-bg: #1e293b;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --border: #334155;
+      --accent: #38bdf8;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      padding: 2rem;
+    }
+    .container { max-width: 960px; margin: 0 auto; }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 2rem;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 1rem;
+    }
+    h1 { font-size: 1.5rem; font-weight: 700; color: var(--accent); }
+    .badge {
+      display: inline-block;
+      padding: 0.25rem 0.6rem;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      background: #0284c7;
+      color: #fff;
+    }
+    .badge-sm { padding: 0.15rem 0.4rem; font-size: 0.7rem; background: #334155; }
+    section { margin-bottom: 2.5rem; }
+    h2 { font-size: 1.2rem; margin-bottom: 1rem; color: var(--text); }
+    .card-list { display: grid; gap: 0.75rem; }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 0.5rem;
+      padding: 1rem 1.25rem;
+    }
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 0.5rem;
+    }
+    .agent-id { font-size: 1.1rem; font-weight: 600; color: var(--accent); }
+    .agent-status {
+      font-size: 0.8rem;
+      padding: 0.2rem 0.5rem;
+      border-radius: 4px;
+      background: rgba(255, 255, 255, 0.08);
+      color: #cbd5e1;
+    }
+    .agent-role { color: var(--text-muted); font-size: 0.9rem; }
+    .empty-state {
+      background: var(--card-bg);
+      border: 1px dashed var(--border);
+      border-radius: 0.5rem;
+      padding: 2rem;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 0.95rem;
+    }
+    .queue-table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--card-bg);
+      border-radius: 0.5rem;
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }
+    .queue-table th, .queue-table td {
+      padding: 0.75rem 1rem;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.9rem;
+    }
+    .queue-table th { background: rgba(0,0,0,0.25); color: var(--text-muted); font-weight: 600; }
+    code { font-family: monospace; font-size: 0.85rem; background: rgba(0,0,0,0.3); padding: 0.1rem 0.3rem; border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Harnet Kontrol Paneli</h1>
+      <span class="badge">Salt-okunur (Faz 1)</span>
+    </header>
+
+    <section id="agents-section">
+      <h2>Ajanlar (${agents.length})</h2>
+      ${agentsHtml}
+    </section>
+
+    <section id="queue-section">
+      <h2>İş Kuyruğu (${queue.length})</h2>
+      ${queueHtml}
+    </section>
+  </div>
+</body>
+</html>`;
+}
+
+/**
+ * Creates the HTTP server instance.
+ * @param {ServerOptions} [options]
+ * @returns {http.Server}
+ */
+export function createServer(options = {}) {
+  const agentsDir = options.agentsDir ?? findAgentsDir();
+
+  /** @returns {QueueItem[]} */
+  function getQueueState() {
+    if (typeof options.queue === "function") {
+      return options.queue();
+    }
+    if (Array.isArray(options.queue)) {
+      return options.queue;
+    }
+    return [];
+  }
+
+  const server = http.createServer((req, res) => {
+    const method = req.method ?? "GET";
+    const parsedUrl = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    const pathname = parsedUrl.pathname;
+
+    if (method !== "GET" && method !== "HEAD") {
+      const payload = JSON.stringify({ error: "Method Not Allowed" });
+      res.writeHead(405, {
+        "Content-Type": "application/json; charset=utf-8",
+        "Content-Length": Buffer.byteLength(payload),
+        "Allow": "GET, HEAD",
+      });
+      res.end(payload);
+      return;
+    }
+
+    if (pathname === "/api/health") {
+      const payload = JSON.stringify({ status: "ok" });
+      res.writeHead(200, {
+        "Content-Type": "application/json; charset=utf-8",
+        "Content-Length": Buffer.byteLength(payload),
+      });
+      if (method === "HEAD") {
+        res.end();
+      } else {
+        res.end(payload);
+      }
+      return;
+    }
+
+    if (pathname === "/api/agents") {
+      const agents = readAgents(agentsDir);
+      const payload = JSON.stringify(agents);
+      res.writeHead(200, {
+        "Content-Type": "application/json; charset=utf-8",
+        "Content-Length": Buffer.byteLength(payload),
+      });
+      if (method === "HEAD") {
+        res.end();
+      } else {
+        res.end(payload);
+      }
+      return;
+    }
+
+    if (pathname === "/api/queue") {
+      const queue = getQueueState();
+      const payload = JSON.stringify(queue);
+      res.writeHead(200, {
+        "Content-Type": "application/json; charset=utf-8",
+        "Content-Length": Buffer.byteLength(payload),
+      });
+      if (method === "HEAD") {
+        res.end();
+      } else {
+        res.end(payload);
+      }
+      return;
+    }
+
+    if (pathname === "/" || pathname === "/index.html") {
+      const agents = readAgents(agentsDir);
+      const queue = getQueueState();
+      const html = renderHtml(agents, queue);
+      const payload = Buffer.from(html, "utf8");
+      res.writeHead(200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Content-Length": payload.length,
+      });
+      if (method === "HEAD") {
+        res.end();
+      } else {
+        res.end(payload);
+      }
+      return;
+    }
+
+    const payload = JSON.stringify({ error: "Not Found" });
+    res.writeHead(404, {
+      "Content-Type": "application/json; charset=utf-8",
+      "Content-Length": Buffer.byteLength(payload),
+    });
+    if (method === "HEAD") {
+      res.end();
+    } else {
+      res.end(payload);
+    }
+  });
+
+  return server;
+}
+
+/**
+ * Starts the server on the configured port and host.
+ * @param {ServerOptions} [options]
+ * @returns {Promise<{ server: http.Server, port: number, close: () => Promise<void> }>}
+ */
+export function start(options = {}) {
+  const port = options.port ?? (process.env.PORT ? parseInt(process.env.PORT, 10) : 3000);
+  const host = options.host ?? "127.0.0.1";
+  const server = createServer(options);
+
+  return new Promise((resolve, reject) => {
+    server.on("error", reject);
+    server.listen(port, host, () => {
+      const addr = server.address();
+      const actualPort = typeof addr === "object" && addr !== null ? addr.port : port;
+      /** @returns {Promise<void>} */
+      const close = () =>
+        new Promise((res, rej) => {
+          server.close((err) => (err ? rej(err) : res()));
+        });
+      resolve({ server, port: actualPort, close });
+    });
+  });
+}
+
+// Direct execution entry point
+if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+  start()
+    .then(({ port }) => {
+      console.log(`[harnet-panel] Listening on http://127.0.0.1:${port}`);
+    })
+    .catch((err) => {
+      console.error("[harnet-panel] Failed to start:", err);
+      process.exit(1);
+    });
 }
