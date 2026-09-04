@@ -28,6 +28,12 @@ Log format: date + decision + why + revisit when. Short entries only.
 - Why: README spec; tmux session opens in that dir and history holds absolute paths, so it must be stable.
 - Revisit: never in MVP.
 
+## 2026-09-04: Dependent chains go as GitHub stacked PRs (gh stack), max depth 3
+- Why: small reviewable layers, one-click merge, branch protection evaluated against main.
+- Rule: stacks only for genuine dependency chains; independent work = separate PRs to main. Agents never push; orchestrator submits, human merges in web UI.
+- Second agy lane allowed only for tiny independent tasks, own worktree + branch.
+- Revisit: if preview limits bite.
+
 ## 2026-09-04: src/MAP.js bans cross-imports between modules (temporary)
 - Why: keeps parallel agents from breaking each other's interfaces; shared shapes duplicated knowingly, guarded by contract tests.
 - Revisit: merge shared types first, then update MAP.js before unifying.
