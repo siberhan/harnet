@@ -5,6 +5,15 @@
  * own transcript jsonl (messages, tool_use blocks, usage counters). Harnet reads
  * job state and reporting from here.
  *
+ * Two shapes, one reader. Claude writes a flat record (`message`, `usage` at the
+ * top level). Codex writes a rollout envelope instead: every record is
+ * `{timestamp, ordinal, type, payload}` and the interesting part is one level
+ * down. Both were captured live by scripts/live-spike.sh; parseLine sniffs the
+ * envelope and dispatches, so a caller never has to know which harness wrote the
+ * file. Before this, a codex rollout parsed cleanly and produced nothing at all -
+ * zero messages, zero tokens, `skipped` still 0 - which is the worst possible
+ * failure: a transcript that looks read and is empty.
+ *
  * No cost: this module reports token counters only. Money is deliberately out of
  * scope - it was estimated once (a placeholder price table), then narrowed to the
  * harness-written costUSD, and is now gone entirely. Whoever needs a figure reads
@@ -125,6 +134,32 @@ export function readUsage(raw) {
 }
 
 /**
+ * Read a codex usage block.
+ *
+ * The counters do NOT mean the same thing as Claude's. Codex `input_tokens` is
+ * the whole prompt and already contains `cached_input_tokens`, while Claude's
+ * `input_tokens` excludes the cached part. Adding them straight would count the
+ * cache twice, so the cached share is subtracted out here. The result satisfies
+ * both invariants at once: `total` is still the sum of the four fields, and it
+ * equals the `total_tokens` codex reports (16933 + 15 = 16948 on the captured
+ * fixture).
+ * @param {unknown} raw
+ * @returns {Usage|null}
+ */
+export function readCodexUsage(raw) {
+  if (!isRecord(raw)) return null;
+  const prompt = num(raw.input_tokens);
+  const cacheRead = num(raw.cached_input_tokens);
+  const cacheWrite = num(raw.cache_write_input_tokens);
+  // `output_tokens` already includes reasoning_output_tokens; adding that
+  // separately would inflate the count.
+  const output = num(raw.output_tokens);
+  const input = Math.max(prompt - cacheRead, 0);
+  if (input === 0 && output === 0 && cacheWrite === 0 && cacheRead === 0) return null;
+  return { input, output, cacheWrite, cacheRead, total: input + output + cacheWrite + cacheRead };
+}
+
+/**
  * Flatten a content array into plain text, ignoring non-text blocks.
  * @param {unknown} content
  * @returns {string}
@@ -134,7 +169,10 @@ function textOf(content) {
   if (!Array.isArray(content)) return "";
   const parts = [];
   for (const block of content) {
-    if (isRecord(block) && block.type === "text" && typeof block.text === "string") {
+    if (!isRecord(block) || typeof block.text !== "string") continue;
+    // "text" is Claude's block type; codex writes "output_text" for what the
+    // model said and "input_text" for what was sent to it.
+    if (block.type === "text" || block.type === "output_text" || block.type === "input_text") {
       parts.push(block.text);
     }
   }
@@ -171,11 +209,109 @@ function toolCallsOf(content, line) {
  * @property {Usage|null} usage
  * @property {string|null} sessionId
  * @property {string|null} timestamp
+ * @property {boolean} finalMessage the harness declared this the turn's answer
  */
+
+/** Codex rollout envelope record types we know how to read. */
+const ROLLOUT_TYPES = new Set([
+  "session_meta",
+  "response_item",
+  "event_msg",
+  "token_usage_record",
+  "turn_context",
+  "world_state",
+  "compacted",
+]);
+
+/**
+ * Whether a record is a codex rollout envelope rather than a Claude line.
+ *
+ * The tell is structural: codex wraps everything in `{type, payload}` and never
+ * puts a `message` at the top level, which is exactly what Claude does put
+ * there. Checked against the known type list too, so an unrelated harness that
+ * happens to have a `payload` key is not silently read as codex.
+ * @param {Record<string, unknown>} value
+ * @returns {boolean}
+ */
+function isRolloutEnvelope(value) {
+  if (!isRecord(value.payload)) return false;
+  if (isRecord(value.message)) return false;
+  const type = str(value.type);
+  return type !== null && ROLLOUT_TYPES.has(type);
+}
+
+/**
+ * Parse one codex rollout line.
+ *
+ * Every known record type produces an entry, even when it carries nothing we
+ * fold in (`turn_context`, `world_state`, the cumulative `token_count` event).
+ * That is deliberate: `skipped` means "this line was broken", and inflating it
+ * with records we simply chose to ignore would make a healthy transcript look
+ * damaged.
+ *
+ * Cumulative counters are the trap here. A `token_usage_record` carries three
+ * usage blocks - `usage` (this response), `turn_token_usage` and
+ * `thread_token_usage` (both running totals). Only the first is folded in;
+ * summing the others across lines would multiply the real number.
+ * @param {Record<string, unknown>} value
+ * @param {number} line
+ * @returns {TranscriptEntry}
+ */
+function parseRolloutLine(value, line) {
+  const payload = /** @type {Record<string, unknown>} */ (value.payload);
+  const type = /** @type {string} */ (str(value.type));
+  const timestamp = str(value.timestamp) ?? str(payload.timestamp);
+
+  /** @type {TranscriptEntry} */
+  const entry = {
+    line,
+    type,
+    role: null,
+    model: null,
+    text: "",
+    toolCalls: [],
+    usage: null,
+    sessionId: str(payload.session_id) ?? str(payload.thread_id),
+    timestamp,
+    finalMessage: false,
+  };
+
+  if (type === "session_meta") {
+    entry.sessionId = entry.sessionId ?? str(payload.id);
+    entry.model = str(payload.model);
+    return entry;
+  }
+
+  if (type === "response_item" && payload.type === "message") {
+    entry.role = str(payload.role);
+    entry.text = textOf(payload.content);
+    return entry;
+  }
+
+  if (type === "token_usage_record") {
+    entry.usage = readCodexUsage(payload.usage);
+    return entry;
+  }
+
+  if (type === "event_msg" && payload.type === "task_complete") {
+    // The harness naming its own answer. It repeats the assistant message that
+    // already arrived as a response_item, so it sets lastMessage without being
+    // pushed as a second message - see addEntry.
+    entry.text = str(payload.last_agent_message) ?? "";
+    entry.finalMessage = entry.text.length > 0;
+    return entry;
+  }
+
+  // Known envelope, nothing to fold: counted as parsed, contributes nothing.
+  return entry;
+}
 
 /**
  * Parse one jsonl line. Returns null for blank, malformed or shapeless lines -
  * the caller counts those as skipped rather than throwing.
+ *
+ * Handles both harnesses: a codex rollout envelope is dispatched to
+ * parseRolloutLine, anything else is read as a Claude record.
  * @param {string} raw
  * @param {number} [line]
  * @returns {TranscriptEntry|null}
@@ -194,6 +330,8 @@ export function parseLine(raw, line = 0) {
   }
   if (!isRecord(value)) return null;
 
+  if (isRolloutEnvelope(value)) return parseRolloutLine(value, line);
+
   const message = isRecord(value.message) ? value.message : null;
   const type = str(value.type) ?? str(message?.role) ?? null;
   if (!type) return null;
@@ -211,6 +349,7 @@ export function parseLine(raw, line = 0) {
     usage,
     sessionId: str(value.sessionId) ?? str(value.session_id),
     timestamp: str(value.timestamp) ?? str(value.ts),
+    finalMessage: false,
   };
 }
 
@@ -235,6 +374,11 @@ export function addEntry(summary, entry) {
       timestamp: entry.timestamp,
     });
     if (entry.role === "assistant" && entry.text.length > 0) summary.lastMessage = entry.text;
+  } else if (entry.finalMessage && entry.text.length > 0) {
+    // A roleless record the harness marked as the turn's answer (codex
+    // task_complete). It is the same text the assistant message already
+    // carried, so it updates lastMessage without becoming a second message.
+    summary.lastMessage = entry.text;
   }
 
   for (const call of entry.toolCalls) {
