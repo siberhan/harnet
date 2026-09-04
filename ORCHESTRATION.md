@@ -4,7 +4,8 @@ Harnet spec: README.md. Read it first. It is the only authority on architecture.
 
 ## How we work right now
 - Agents work in parallel only on independent tasks (see Parallel rule). The human carries prompts between agents by copy-paste.
-- Never start work you were not asked for. Never touch another agent's branch.
+- Never start work you were not asked for. No unsolicited features. If you think something is missing, write it in your Report risk section and stop.
+- Never touch another agent's branch.
 - Your branch: harnet/<your-name>. Your dir: .harnet/agents/<your-name>/wt.
 - Commit every finished turn on your branch. Never push anything. Orchestrator opens PRs (stacked when dependent), human merges in web UI.
 
