@@ -157,3 +157,51 @@ Left / for whoever picks this up:
   is captured. Same discipline as the cost episode - no invented data.
 - docs/API.md still documents only summarizeUsage; readCodexUsage and the
   two-shape reader are undocumented there. Out of my allowed paths.
+
+## Standing facts from the live e2e (measured 2026-09-04, 4 real runs)
+
+Run `scripts/live-e2e.sh` to reproduce; manual-only, never in CI.
+Unlike live-spike.sh (which drove tmux by hand), this run drives the REAL
+control service: createQueue + createGroupRegistry + createControlService +
+createClaudeAdapter, and touches tmux only through the adapter.
+
+- The full loop works unchanged against a live claude: submitGroup -> dispatch
+  -> adapter.write -> send-keys -> Stop hook -> handleStop -> queue.complete
+  -> groups.record -> exactly one wake-up. Measured send-keys -> Stop: 2-3s.
+- Socket isolation does not need an adapter change. The adapter emits plain
+  `tmux ...` argv, so the driver injects a `run` that rewrites argv[0]==="tmux"
+  into `tmux -L harnet-e2e ...`. Same trick works for any future sandboxing.
+- THE STOP HOOK CAN FIRE BEFORE THE TRANSCRIPT IS FLUSHED. Run 3 of 4 read a
+  transcript that stopped one line short of the assistant turn: 12 lines,
+  parsed 12, skipped 0, lastMessage null, tokens 0 - so the job completed with
+  an EMPTY report while the payload itself carried the answer. The file had 17
+  lines seconds later. A reader that fires the instant the hook lands is racing.
+  transcript.js is not at fault; there was genuinely no message yet.
+  Handled in the driver by waiting for the assistant turn (FLUSH_TIMEOUT, 15s
+  default; it landed in 1ms on the next run) and falling back to the payload's
+  `last_assistant_message`. test/stop-flush-race.test.js pins both halves.
+  Whoever wires readReport in the real service must do the same - src/ was
+  outside this turn's allowed paths.
+- The Stop payload's `cwd` is the /private-prefixed realpath of the worktree on
+  macOS; compare with realpathSync on both sides or the check false-alarms.
+- A group with `parent: null` still emits its wake-up and logs it; nothing is
+  written to an agent. That is how a live run gets the wake-up as evidence
+  without needing a second live session to receive it.
+
+### claude-e2e-1 (done)
+Added scripts/live-e2e.sh (environment: throwaway git repo, per-run .claude
+Stop/Notification hooks, isolated tmux socket) + scripts/live-e2e.mjs (all
+harnet wiring, imports src/ directly) + test/stop-flush-race.test.js (3 tests).
+Also deleted the stale 2-line NOTE in scripts/live-spike.sh that still claimed
+the reader "extracts nothing" from a codex rollout - the follow-up my previous
+turn could not reach. 231/231 tests, `npm run check` clean.
+
+Left / for whoever picks this up:
+- The flush race needs handling inside the real service, not just in the
+  driver: adapter `readReport` should retry or fall back to
+  `payload.last_assistant_message`. It is a live data-loss bug, not cosmetic.
+- The driver binds the harness session id on the first Stop signal because the
+  id does not exist until the harness prints it. A real service should bind at
+  spawn time - probably by passing an agent id into the hook command.
+- No codex e2e yet: codex's notify carries no transcript path, so the report
+  path there is unproven end to end.

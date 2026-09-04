@@ -363,8 +363,6 @@ EOF
     info "rollout: $rollout"
     ( cd "$REPO_ROOT" && parse_transcript "$rollout" ) | sed 's/^/     /' \
       || { fail "rollout parse failed"; return 1; }
-    info "NOTE: codex nests everything under .payload, so the Claude-shaped"
-    info "      reader parses every line but extracts nothing. See report."
   fi
 
   info "pane.log bytes: $(wc -c < "$pane" | tr -d ' ')"
