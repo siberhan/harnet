@@ -5,7 +5,7 @@
 - done: workbuddy-queue-1 (wb) - queue, busy, result groups, 48 tests
 - done: workbuddy-git-1 (wb) - worktree manager + delivery merge, 89 tests
 - done: antigravity-panel-1 (agy) - read-only panel, 67 tests
-- open: chatgpt-adapters-1 (gpt) - finish adapters from wb WIP, branch harnet/chatgpt-adapters
+- review: chatgpt-adapters-1 (gpt) - PR #3, adapters done 156/156
 - review: antigravity-ci-1 (agy) - PR #1, CI workflow
 - review: antigravity-docs-1 (agy lane 2) - PR #2, docs only
 
@@ -13,7 +13,7 @@
 - workbuddy: BLOCKED, limit hit (was thought unlimited, it is limited)
 - opencode: idle, core successor (muse-spark 1.3)
 - antigravity: lane 1 review (PR #1), lane 2 review (PR #2)
-- chatgpt: busy (chatgpt-adapters-1, takeover)
+- chatgpt: review (PR #3), quota spared otherwise
 - claude: idle, tiny tasks only until limit renews
 
 ## Merge order
