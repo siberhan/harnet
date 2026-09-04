@@ -13,7 +13,7 @@
 - done: antigravity-daemon-1 (agy lane 1) - PR #12 merged, file store
 - done: claude-codexe2e-1 (claude) - PR #17 merged, codex live
 - done: antigravity-profiles-1 (agy lane 1) - PR #18 merged, profiles
-- open: antigravity-attach-1 (agy lane 1) - WS terminal attach, branch harnet/antigravity
+- review: antigravity-attach-1 (agy lane 1) - PR #20, WS attach 298/298
 - done: antigravity-launchd-1 (agy lane 2) - PR #19 merged, plist + docs
 - done: claude-cleanup-1 (claude) - PR #14 merged
 - done: antigravity-up-1 (agy lane 1) - PR #15 merged
@@ -28,7 +28,7 @@
 
 ## Board + limits
 - workbuddy: BLOCKED, limit hit (was thought unlimited, it is limited)
-- antigravity: lane 1 busy (attach-1), lane 2 idle
+- antigravity: lane 1 review (PR #20), lane 2 idle
 - chatgpt: idle, quota spared
 - claude: idle
 
