@@ -5,18 +5,17 @@
 - done: workbuddy-queue-1 (wb) - queue, busy, result groups, 48 tests
 - done: workbuddy-git-1 (wb) - worktree manager + delivery merge, 89 tests
 - done: antigravity-panel-1 (agy) - read-only panel, 67 tests
-- open: opencode-service-1 (opencode) - control service wiring, branch harnet/opencode
+- done: chatgpt-adapters-1 (gpt) - PR #3, adapters 156/156
+- open: chatgpt-service-1 (gpt) - control service wiring, branch harnet/chatgpt-service
 - open: claude-transcript-1 (claude) - real jsonl reader, branch harnet/claude
 - open: antigravity-bin-1 (agy lane 1) - bin/harnet status CLI, branch harnet/antigravity
-- review: chatgpt-adapters-1 (gpt) - PR #3, adapters done 156/156
-- review: antigravity-ci-1 (agy) - PR #1, CI workflow
-- review: antigravity-docs-1 (agy lane 2) - PR #2, docs only
+- done: antigravity-ci-1 (agy) - PR #1 merged
+- done: antigravity-docs-1 (agy lane 2) - PR #2 merged
 
 ## Board + limits
 - workbuddy: BLOCKED, limit hit (was thought unlimited, it is limited)
-- opencode: busy (opencode-service-1)
-- antigravity: lane 1 busy (antigravity-bin-1) after PR #1 merges, lane 2 review (PR #2)
-- chatgpt: review (PR #3), quota spared otherwise
+- antigravity: lane 1 busy (antigravity-bin-1), lane 2 idle
+- chatgpt: busy (chatgpt-service-1)
 - claude: busy (claude-transcript-1), limit renewed
 
 ## Merge order
