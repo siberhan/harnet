@@ -11,6 +11,7 @@
 
 ## Board + limits
 - workbuddy: BLOCKED, limit hit (was thought unlimited, it is limited)
+- opencode: idle, core successor (muse-spark 1.3)
 - antigravity: lane 1 review (PR #1), lane 2 review (PR #2)
 - chatgpt: busy (chatgpt-adapters-1, takeover)
 - claude: idle, tiny tasks only until limit renews
