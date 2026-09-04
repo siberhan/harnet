@@ -152,6 +152,7 @@ export function shQuote(value) {
  * @property {string} [cwd]
  * @property {boolean} [stop_hook_active]
  * @property {string} [status] "error" turns the completion into an error
+ * @property {string} [message] notification/permission text
  * @property {string} [agentId] explicit agent, when the hook config carries it
  */
 

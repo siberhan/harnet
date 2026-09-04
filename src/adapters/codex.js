@@ -149,6 +149,7 @@ export function shQuote(value) {
  * @property {string} [last_assistant_message] the report, carried by notify
  * @property {string} [status] "error" turns the completion into an error
  * @property {string} [message] approval/permission text
+ * @property {boolean} [approval] alternate approval-request marker
  * @property {string} [agentId] explicit agent, when the notify config carries it
  */
 

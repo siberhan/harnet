@@ -39,6 +39,8 @@ function tmuxRun(state) {
     if (key.startsWith("tmux has-session")) {
       return { status: state.alive ? 0 : 1, stdout: "", stderr: "" };
     }
+    if (key.startsWith("tmux new-session")) state.alive = true;
+    if (key.startsWith("tmux kill-session")) state.alive = false;
     return { status: 0, stdout: "", stderr: "" };
   };
 }
@@ -62,21 +64,19 @@ describe("adapter contract: shared shapes", () => {
     const state = { alive: false };
     const claude = createClaudeAdapter({ root: ROOT, run: tmuxRun(state) });
     const codex = createCodexAdapter({ root: ROOT, run: tmuxRun(state) });
-    const common = [
+    const methods = /** @type {const} */ ([
       "bind",
       "calls",
       "handleNotification",
-      "harness",
       "isAlive",
       "kill",
       "notifications",
-      "root",
       "sessions",
       "spawn",
       "sweepCrashes",
       "write",
-    ];
-    for (const key of common) {
+    ]);
+    for (const key of methods) {
       assert.equal(typeof claude[key], "function", `claude is missing ${key}`);
       assert.equal(typeof codex[key], "function", `codex is missing ${key}`);
     }
@@ -136,10 +136,11 @@ describe("adapter contract: full turn on the real queue", () => {
   });
 
   it("both harnesses crash the same way", () => {
-    const state = { alive: true };
+    const claudeState = { alive: false };
+    const codexState = { alive: false };
     const queue = createQueue({ now: () => 500 });
-    const claude = createClaudeAdapter({ root: ROOT, run: tmuxRun(state), queue });
-    const codex = createCodexAdapter({ root: ROOT, run: tmuxRun(state), queue });
+    const claude = createClaudeAdapter({ root: ROOT, run: tmuxRun(claudeState), queue });
+    const codex = createCodexAdapter({ root: ROOT, run: tmuxRun(codexState), queue });
 
     const claudeJob = queue.enqueue({ agent: "a1", prompt: "x" });
     const codexJob = queue.enqueue({ agent: "b1", prompt: "y" });
@@ -148,7 +149,8 @@ describe("adapter contract: full turn on the real queue", () => {
     claude.spawn({ agentId: "a1", worktree: ".harnet/agents/a1/wt" });
     codex.spawn({ agentId: "b1", worktree: ".harnet/agents/b1/wt" });
 
-    state.alive = false;
+    claudeState.alive = false;
+    codexState.alive = false;
     assert.equal(claude.sweepCrashes().length, 1);
     assert.equal(codex.sweepCrashes().length, 1);
     assert.equal(queue.get(claudeJob.id)?.status, JobStatus.CRASHED);

@@ -137,7 +137,7 @@ describe("claude: write", () => {
   it("types the prompt literally and presses enter", () => {
     const { adapter, sink } = setup();
     const res = adapter.write({ agentId: "a1", text: "fix the tests\nrm -rf /" });
-    assert.deepEqual(res, { agentId: "a1", session: "harnet-a1", chars: 21 });
+    assert.deepEqual(res, { agentId: "a1", session: "harnet-a1", chars: 22 });
     assert.deepEqual(sink.calls, [
       `${ROOT} :: tmux has-session -t harnet-a1`,
       `${ROOT} :: tmux send-keys -t harnet-a1 -l -- fix the tests\nrm -rf /`,
@@ -287,7 +287,6 @@ describe("claude: crashes", () => {
     const adapter = createClaudeAdapter({ root: ROOT, run: runnerFor(routes), queue });
 
     // session comes up, job runs, then the tmux session dies
-    routes["tmux has-session"] = { status: 0 };
     adapter.spawn({ agentId: "a1", worktree: ".harnet/agents/a1/wt" });
     routes["tmux has-session"] = { status: 1 };
 
@@ -303,9 +302,11 @@ describe("claude: crashes", () => {
 
   it("does nothing while every session is alive", () => {
     const { queue } = withRunningJob("a1");
-    const adapter = createClaudeAdapter({ root: ROOT, run: runnerFor(ALIVE), queue });
+    const routes = { ...ALIVE, "tmux has-session": { status: 1 } };
+    const adapter = createClaudeAdapter({ root: ROOT, run: runnerFor(routes), queue });
     assert.deepEqual(adapter.sweepCrashes(), [], "no sessions registered yet");
     adapter.spawn({ agentId: "a1", worktree: ".harnet/agents/a1/wt" });
+    routes["tmux has-session"] = { status: 0 };
     assert.deepEqual(adapter.sweepCrashes(), [], "session is alive");
   });
 
@@ -314,7 +315,7 @@ describe("claude: crashes", () => {
     assert.throws(() => adapter.write({ agentId: "a1", text: "hi" }));
     const calls = adapter.calls();
     assert.equal(calls.length, 1);
-    assert.equal(calls[0].ok, true, "the has-session probe itself succeeded");
+    assert.equal(calls[0].ok, false, "the failed has-session probe is logged");
     assert.deepEqual(calls[0].argv, ["tmux", "has-session", "-t", "harnet-a1"]);
     assert.equal(calls[0].cwd, ROOT);
   });

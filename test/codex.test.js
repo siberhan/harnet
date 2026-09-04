@@ -246,7 +246,7 @@ describe("codex: approvals", () => {
 describe("codex: crashes", () => {
   it("turns a dead session into a crashed job, once", () => {
     const { queue, job } = withRunningJob("b1");
-    const routes = { ...ALIVE, "tmux has-session": { status: 0 } };
+    const routes = { ...ALIVE, "tmux has-session": { status: 1 } };
     const adapter = createCodexAdapter({ root: ROOT, run: runnerFor(routes), queue });
     adapter.spawn({ agentId: "b1", worktree: ".harnet/agents/b1/wt" });
 
