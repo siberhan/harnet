@@ -9,9 +9,9 @@
 - done: chatgpt-service-1 (gpt) - PR #4 merged, control service
 - done: claude-transcript-1 (claude) - PR #6 merged, jsonl reader
 - done: antigravity-bin-1 (agy lane 1) - PR #5 merged, status CLI
-- review: claude-e2e-1 (claude) - PR #11, live e2e 231/231, flush-race found
-- review: antigravity-daemon-1 (agy lane 1) - PR #12, file store 243/243
-- open: readreport-fix (next) - Stop-flush fallback belongs in src/service
+- done: claude-e2e-1 (claude) - PR #11 merged, live e2e
+- done: antigravity-daemon-1 (agy lane 1) - PR #12 merged, file store
+- open: claude-readreport-1 (claude) - flush-wait + payload fallback in service, branch harnet/claude
 - done: claude-spike-1 + codexfix-1 (claude) - PR #8 merged, live proof + codex fix
 - done: antigravity-panelwire-1 (agy lane 1) - PR #9 merged
 - done: antigravity-docs-2 (agy lane 2) - PR #10 merged
@@ -21,9 +21,9 @@
 
 ## Board + limits
 - workbuddy: BLOCKED, limit hit (was thought unlimited, it is limited)
-- antigravity: lane 1 review (PR #12), lane 2 idle
+- antigravity: lane 1 idle, lane 2 idle
 - chatgpt: idle, quota spared
-- claude: review (PR #11)
+- claude: busy (readreport-1)
 
 ## Merge order
 - PR per job. Independent jobs = separate PRs to main, either order.
