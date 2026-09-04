@@ -11,9 +11,19 @@ Ajan meşguliyet durumlarını, çağrı derinliği sınırını ve zaman aşım
 `ResultStatus`: `DONE | ERROR | TIMEOUT | CRASHED | REFUSED`; `isTerminalStatus(status): boolean`
 Bir turdaki çocuk işleri sonuç gruplarında toplar ve tümü tamamlandığında ebeveyn ajana tek bir uyandırma mesajı oluşturur.
 
+### store (`src/service/store.js`)
+`createJobStore(opts)`: `{ load(), save(jobs?), all(), get(id), add(job), update(id, patch), remove(id), clear(), attach(queue), restore(queue), filePath, backupPath }`
+`attachJobStore(queue, opts)` / `createPersistentQueue(queue, opts)`, `loadJobs(path, opts)`, `saveJobs(path, jobs, opts)`, `restoreJobs(queue, storedJobs)`
+İş kuyruğunu `.harnet/state/jobs.json` üzerinde atomik olarak kalıcılaştırır, bozulma anında yedekler (`.bak`) ve kuyruk mutasyonlarını otomatik senkronize eder.
+
 ### control (`src/service/control.js`)
 `createControlService({ queue, groups, adapters })`: `{ submit(spec), submitGroup(spec), dispatch(agent), complete(spec), handleSignal(spec), sweepTimeouts(spec?), markCrashed(spec), sweepCrashes(), wakeups() }`
 Kuyruk, sonuç grupları ve adaptörleri birbirine bağlayarak iş dağıtımını, tamamlama sinyallerini ve ebeveyn uyandırma akışını koordine eder.
+
+### report (`src/service/report.js`)
+`createReportReader({ parse, readFile?, flushTimeoutMs?, pollMs?, now?, sleep?, onAttempt? })`: `(ctx: { transcriptPath, agentId?, payload? }) => string|null`
+`lastMessageFromPayload(payload): string|null`, `readFileOrNull(path): string|null`, `DEFAULT_FLUSH_TIMEOUT_MS = 2000`, `DEFAULT_POLL_MS = 50`
+Stop sinyali sonrası diske henüz yazılmamış transcriptleri kısa süreli yoklar (polling) ve gerektiğinde sinyal yükündeki son mesaj yedeğiyle iş raporunu üretir.
 
 ### worktree (`src/git/worktree.js`)
 `createWorktreeManager(opts)`: `{ open({ agentId, base?, session? }), list(), abandon({ agentId, session? }), remove({ agentId, force?, deleteBranch? }), branchExists(branch) }`
