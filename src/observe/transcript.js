@@ -310,16 +310,15 @@ export async function readTranscript(filePath) {
 
 /**
  * Legacy helper kept for callers that already hold plain blocks (test/smoke).
- * @typedef {{ tokens?: number, cost?: number }} UsageBlock
+ * @typedef {{ tokens?: number }} UsageBlock
  * @param {UsageBlock[]} blocks
- * @returns {{ tokens: number, cost: number }}
+ * @returns {{ tokens: number }}
  */
 export function summarizeUsage(blocks) {
-  /** @type {{ tokens: number, cost: number }} */
-  const total = { tokens: 0, cost: 0 };
+  /** @type {{ tokens: number }} */
+  const total = { tokens: 0 };
   for (const b of blocks) {
     total.tokens += b.tokens ?? 0;
-    total.cost += b.cost ?? 0;
   }
   return total;
 }

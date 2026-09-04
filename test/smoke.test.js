@@ -36,7 +36,7 @@ describe("scaffold", () => {
     assert.ok(deliveryPlan({ childBranch: "harnet/b", parentBranch: "main" }).includes("abort"));
   });
 
-  it("usage sums tokens and cost", () => {
-    assert.deepEqual(summarizeUsage([{ tokens: 3, cost: 1 }]), { tokens: 3, cost: 1 });
+  it("usage sums tokens", () => {
+    assert.deepEqual(summarizeUsage([{ tokens: 3 }]), { tokens: 3 });
   });
 });

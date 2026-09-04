@@ -322,9 +322,8 @@ describe("transcript: accumulator", () => {
   });
 
   it("keeps the legacy block summarizer working", () => {
-    assert.deepEqual(summarizeUsage([{ tokens: 3, cost: 1 }, { tokens: 2 }]), {
+    assert.deepEqual(summarizeUsage([{ tokens: 3 }, { tokens: 2 }]), {
       tokens: 5,
-      cost: 1,
     });
   });
 });

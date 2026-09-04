@@ -22,7 +22,7 @@
 `CODEX`: `{ spawn: "codex", write: "tmux send-keys", doneSignal: "notify program", log: "rollout .jsonl" }`
 
 ### transcript (`src/observe/transcript.js`)
-`summarizeUsage(blocks: Array<{ tokens?: number, cost?: number }>): { tokens: number, cost: number }`
+`summarizeUsage(blocks: Array<{ tokens?: number }>): { tokens: number }`
 
 ### panel (`src/panel/server.js`)
 `createServer(opts): http.Server` (rotalar: `GET /`, `GET /api/health`, `GET /api/agents`, `GET /api/queue`)
