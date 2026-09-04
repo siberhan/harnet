@@ -34,6 +34,7 @@ import { createGroupRegistry } from "../src/service/jobs.js";
 import { createQueue } from "../src/service/queue.js";
 import { createClaudeAdapter, spawnRunner, sessionName } from "../src/adapters/claude.js";
 import { parseTranscript } from "../src/observe/transcript.js";
+import { createReportReader } from "../src/service/report.js";
 
 /**
  * @param {string} name
@@ -154,27 +155,6 @@ async function waitForStop() {
 }
 
 /**
- * The Stop hook fires before the harness has necessarily flushed the assistant
- * turn to the transcript, so a reader that runs the instant the hook lands can
- * miss the answer. Wait for the turn to appear, briefly, before parsing.
- * @param {string|null} transcriptPath
- * @returns {Promise<{ flushed: boolean, waitedMs: number }>}
- */
-async function waitForFlush(transcriptPath) {
-  const startedAt = Date.now();
-  if (transcriptPath === null) return { flushed: false, waitedMs: 0 };
-  const deadline = startedAt + FLUSH_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    if (existsSync(transcriptPath)) {
-      const summary = parseTranscript(readFileSync(transcriptPath, "utf8"));
-      if (summary.lastMessage !== null) return { flushed: true, waitedMs: Date.now() - startedAt };
-    }
-    await delay(250);
-  }
-  return { flushed: false, waitedMs: Date.now() - startedAt };
-}
-
-/**
  * @param {string} message
  * @param {...unknown} details
  */
@@ -194,34 +174,39 @@ async function main() {
   say("wiring the real control service");
   const queue = createQueue();
   const groups = createGroupRegistry();
+  /** Every distinct transcript state the reader saw, for the evidence file. */
   /** @type {string[]} */
   const reportsRead = [];
+  /** @type {import("../src/service/report.js").ReportAttempt|null} */
+  let reportAttempt = null;
   const adapter = createClaudeAdapter({
     run: isolatedRunner,
     root: RUN_ROOT,
     queue,
     // The report is the agent's answer, read out of the transcript the Stop
-    // payload points at - never scraped off the pane.
-    readReport: ({ transcriptPath, payload }) => {
-      if (transcriptPath === null || !existsSync(transcriptPath)) return null;
-      const summary = parseTranscript(readFileSync(transcriptPath, "utf8"));
-      reportsRead.push(
-        `lines=${summary.lines} parsed=${summary.parsed} skipped=${summary.skipped} ` +
-          `session=${summary.sessionId} tokens=${summary.usage.total}`,
-      );
-      if (summary.lastMessage !== null) return summary.lastMessage;
-      // MEASURED, not assumed: the Stop hook can fire before the harness has
-      // flushed the assistant turn to the jsonl. One run in three read a
-      // transcript that stopped one line short of the answer. waitForFlush()
-      // below gives the file a moment first; if it still has not landed, the
-      // payload's own copy of the answer is the honest fallback.
-      const fromPayload = payload?.last_assistant_message ?? null;
-      if (typeof fromPayload === "string" && fromPayload !== "") {
-        reportsRead.push("transcript had no assistant turn yet; used Stop payload's copy");
-        return fromPayload;
-      }
-      return null;
-    },
+    // payload points at - never scraped off the pane. This is the SHIPPING
+    // reader (src/service/report.js): it polls for the flush and falls back to
+    // the payload's own copy, so the live run exercises the real code path
+    // rather than a second implementation of it. The only thing added here is
+    // bookkeeping for the evidence file.
+    readReport: createReportReader({
+      parse: (text) => {
+        const summary = parseTranscript(text);
+        const line =
+          `lines=${summary.lines} parsed=${summary.parsed} skipped=${summary.skipped} ` +
+          `session=${summary.sessionId} tokens=${summary.usage.total}`;
+        // One line per poll would be noise; only a change is news.
+        if (reportsRead[reportsRead.length - 1] !== line) reportsRead.push(line);
+        return summary;
+      },
+      // A manual script may block: the budget is generous here, unlike the 2s
+      // the service defaults to.
+      flushTimeoutMs: FLUSH_TIMEOUT_MS,
+      pollMs: 250,
+      onAttempt: (attempt) => {
+        reportAttempt = attempt;
+      },
+    }),
     onNotification: (entry) => {
       appendFileSync(NOTIFY_FILE, `${JSON.stringify(entry.payload)}\n`);
       info(`notification (human needed): ${entry.message}`);
@@ -305,13 +290,6 @@ async function main() {
     info(`bound harness session ${payload.session_id} -> agent ${AGENT}`);
   }
 
-  const flush = await waitForFlush(payload.transcript_path ?? null);
-  info(
-    flush.flushed
-      ? `transcript carried the assistant turn after ${flush.waitedMs}ms`
-      : `transcript still had no assistant turn after ${flush.waitedMs}ms (falling back to the payload)`,
-  );
-
   say("service.handleSignal -> adapter.handleStop -> queue.complete -> wake-up");
   const handled = service.handleSignal({ agent: AGENT, payload });
   if (handled.signal === null || handled.signal.matched !== true) {
@@ -323,6 +301,13 @@ async function main() {
   }
   info(`signal matched job ${handled.signal.jobId}, status=${handled.signal.status}`);
   for (const line of reportsRead) info(`transcript read: ${line}`);
+  if (reportAttempt !== null) {
+    info(
+      `report source: ${reportAttempt.source} ` +
+        `(${reportAttempt.reads} read${reportAttempt.reads === 1 ? "" : "s"}, ` +
+        `${reportAttempt.waitedMs}ms waiting for the flush)`,
+    );
+  }
   dump("report the service stored:", handled.job?.report ?? "(none)");
 
   const wakeups = service.wakeups();
@@ -347,7 +332,7 @@ async function main() {
     signal: handled.signal,
     job: { id: handled.job?.id, status: handled.job?.status, report: handled.job?.report },
     transcriptSummaries: reportsRead,
-    transcriptFlush: flush,
+    reportAttempt,
     wakeup: wakeups[0],
     answerMatchedToken: answerMatched,
     paneLogBytes: existsSync(session.absoluteLogPath)
