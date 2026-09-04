@@ -2,7 +2,7 @@
 
 Role: scaffold + web panel + tests + docs. Fast, simple tasks first.
 Branch: harnet/antigravity. Dir: .harnet/agents/antigravity/wt.
-Status: turn 4 done (reconstructed by orchestrator 2026-09-04 after uncommitted root write was lost; substance from job reports).
+Status: turn 7 done. Waiting for the orchestrator. NOT pushed — commit sits on harnet/antigravity only.
 
 ## Turn 1 — job antigravity-panel-1 (read-only web panel, agents + queue)
 
@@ -52,3 +52,86 @@ Commit ff5c054, PR #5 merged. bin/harnet.js status reads STATE.md + agent MEMORY
 
 ## Turn 4 — job antigravity-panelwire-1 (panel transcript tail, reconstructed)
 Commit c3fd0d5, PR #9 merged. GET /api/agents/<id>/tail + last-message on cards. 8 new tests in test/panel.test.js. 204/204 green on branch.
+
+## Turn 5 — job antigravity-daemon-1 (job queue file persistence, src/service/store.js)
+
+Task: add file persistence to job queue via src/service/store.js (.harnet/state/jobs.json, .bak on corrupt, zero touches to queue.js / jobs.js).
+Commit: 81f0433 "feat(service): add job queue file persistence store" (branch harnet/antigravity, untracked by push).
+
+What changed:
+- src/service/store.js:
+  - Default path .harnet/state/jobs.json with recursive dir creation.
+  - loadJobs() reads on startup: returns [] if file does not exist.
+  - If corrupted or invalid JSON, backs up file to .bak and starts empty without throwing/crashing.
+  - saveJobs() atomically writes formatted JSON (via temp file and atomic rename).
+  - attachJobStore(queue, options) / createPersistentQueue(queue, options):
+    - Replays/restores existing jobs into queue upon restart (restores queued, running, terminal jobs and agent busy states).
+    - Prevents ID collision on restored jobs by auto-incrementing beyond existing numeric IDs.
+    - Wraps mutating methods (enqueue, push, dispatch, complete, sweepTimeouts, markCrashed) to persist state to disk on every change.
+  - createJobStore(options) standalone store API (add, update, remove, clear, load, save, attach, restore).
+  - MAP rule respected: zero cross-imports to queue.js or jobs.js (accepts queue interface).
+- test/store.test.js:
+  - 12 comprehensive unit and integration tests in isolated temp directories.
+  - Covers default paths, missing files, corrupted JSON backup (.bak), whitespace, standalone API, enqueue/dispatch/complete/sweepTimeouts/markCrashed persistence, process restart & state restoration, and controlService integration.
+- Tests & checks: npm test (243/243 passing, 39 new assertions), npm run check (tsc strict checkJs) clean.
+
+Files:
+- src/service/store.js
+- test/store.test.js
+
+Left:
+- Phase 1 step 5 follow-up: connect real control service queue to GET /api/queue and panel.
+- Phase 2: WebSocket, xterm.js attach to live tmux sessions, permission question queue.
+
+## Turn 6 — job antigravity-up-1 (node bin/harnet.js up, control service + panel daemon skeleton)
+
+Task: implement node bin/harnet.js up command setting up queue, store, report reader, control service, and panel server with graceful Ctrl-C shutdown.
+Commit: ebcc266 "feat(bin): add harnet up command for control service and web panel" (branch harnet/antigravity, untracked by push).
+
+What changed:
+- src/service/control.js:
+  - Added setupControlService(options) wiring createQueue(), attachJobStore(), createReportReader(), createGroupRegistry(), and createControlService().
+  - Preserved all existing function signatures and zero external/cross-layer import restrictions.
+- bin/harnet.js:
+  - Added startUp(options) helper configuring paths, setupControlService with parseTranscript, and startPanel({ queue: () => queue.all() }).
+  - Added up command in CLI dispatcher with --port / -p option and graceful SIGINT / SIGTERM handler that saves the store and stops cleanly.
+  - Updated help message and CLI execution wrapper.
+- test/up.test.js:
+  - 5 unit, in-process integration, and subprocess tests verifying service setup, existing jobs loading, transcript parsing via parseTranscript, GET /api/health (200 { status: "ok" }), live /api/queue updates, and SIGINT shutdown saving store to disk.
+- Tests & checks: npm test (268/268 passing), npm run check (tsc strict checkJs) clean.
+
+Files:
+- bin/harnet.js
+- src/service/control.js
+- test/up.test.js
+
+Left:
+- Phase 1 step 5 follow-up: wire live agent adapters (Claude/Codex) into the control service when ready.
+- Phase 2: WebSocket, xterm.js attach to live tmux sessions, permission question queue.
+
+## Turn 7 — job antigravity-profiles-1 (agent templates and profiles manager, src/service/profiles.js)
+
+Task: implement src/service/profiles.js managing agent templates and profiles (worktree + branch + tmux adapter spawn, abandon keeps worktree, remove drops worktree and branch by default).
+Commit: dfa040a "feat(service): add agent profiles and templates manager" (branch harnet/antigravity, untracked by push).
+
+What changed:
+- src/service/profiles.js:
+  - Added template definitions (DEFAULT_TEMPLATE, TEMPLATES: default, developer, reviewer, codex) defining role, defaultPrompt, capabilities, and harness ("claude" | "codex").
+  - Implemented resolveTemplate() resolving template by name or partial object, defaulting to DEFAULT_TEMPLATE if omitted.
+  - Implemented createProfileManager(options) accepting injected root and runner for mocking/tests without real git or tmux.
+  - Implemented createProfile({ id, template, base }): opens worktree (.harnet/agents/<id>/wt) on branch (harnet/<id>) and spawns tmux session (harnet-<id>) via adapter.
+  - Implemented openProfile({ id, template, base }): reconnects/ensures worktree and spawns a new session if dead.
+  - Implemented abandonProfile({ id }): closes tmux session, preserves worktree and branch on disk, transitions state to "abandoned".
+  - Implemented removeProfile({ id, force, deleteBranch }): closes session if alive, removes worktree and deletes branch by default (deleteBranch defaults to true, "varsayılan dalsız silme kapalı").
+  - Exported standalone helper functions: createProfile, openProfile, abandonProfile, removeProfile.
+- test/profiles.test.js:
+  - 12 unit tests using in-memory fake runner testing template resolution, createProfile, custom base branch, codex template, abandonProfile session closure & worktree preservation, removeProfile worktree and branch deletion, deleteBranch override, profile listing, and standalone helper functions.
+- Tests & checks: npm test (280/280 passing), npm run check (tsc strict checkJs) clean.
+
+Files:
+- src/service/profiles.js
+- test/profiles.test.js
+
+Left:
+- Phase 1 step 5 follow-up: wire live agent adapters (Claude/Codex) into the control service when ready.
+- Phase 2: WebSocket, xterm.js attach to live tmux sessions, permission question queue.
