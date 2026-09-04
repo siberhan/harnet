@@ -1,6 +1,6 @@
 # chatgpt MEMORY
 
-Role: reserved expert. Hard algorithms + code review only. Weekly limit is half, do not spend on small tasks.
-Branch: harnet/chatgpt. Dir: .harnet/agents/chatgpt/wt.
-Status: idle, reserved.
+Role: reserved expert. Weekly limit halved, spend only on hard tasks.
+Branch: harnet/chatgpt-adapters (takeover from wb WIP 886e559). Dir: .harnet/agents/chatgpt/wt.
+Status: busy (chatgpt-adapters-1).
 Log: empty.
