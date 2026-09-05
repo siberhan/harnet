@@ -1,13 +1,15 @@
 /**
- * Web panel with read-only view and live terminal attachment.
- * README: Web Arayuzu (Phase 1: read-only slice + transcript view; Phase 2: live xterm.js attach).
+ * Web panel with read-only view, live terminal attachment, and permission queue.
+ * README: Web Arayuzu (Phase 1: read-only slice + transcript view; Phase 2: live xterm.js attach + permissions).
  *
  * Endpoints:
  * - GET /api/health: { status: "ok" }
  * - GET /api/agents: [{ id, role, status, lastMessage }, ...] from .harnet/agents/<id>/MEMORY.md
  * - GET /api/agents/<id>/tail: last N lines parsed JSON (lastMessage + usage + skipped)
+ * - GET /api/permissions: [{ id, agentId, kind, prompt, createdAt }, ...] (or injected provider)
+ * - POST /api/permissions/<id>: body { decision: "approve" | "deny" } -> { ok: true }
  * - GET /api/queue: [] (or injected queue state)
- * - GET /: single HTML page showing agent list (with last message & connect button) + queue
+ * - GET /: single HTML page showing agent list (with last message & connect button) + permissions + queue
  * - WS /api/agents/<id>/term: live tmux terminal attach (pipe-pane tail + send-keys relay)
  *
  * Dependencies: Node builtins (http, fs, path, child_process) + ws for terminal WebSocket.
@@ -41,6 +43,20 @@ export const PANEL_ROUTE = "/";
  */
 
 /**
+ * @typedef {object} PermissionItem
+ * @property {string} id
+ * @property {string} agentId
+ * @property {string} kind
+ * @property {string} prompt
+ * @property {number} createdAt
+ * @property {string} [status]
+ */
+
+/**
+ * @typedef {PermissionItem[] | (() => PermissionItem[]) | { all?: () => PermissionItem[], list?: () => PermissionItem[], decide?: (id: string, decision: "approve" | "deny") => unknown, resolve?: (id: string, decision: "approve" | "deny") => unknown }} PermissionProvider
+ */
+
+/**
  * @typedef {(argv: string[], opts?: { cwd?: string }) => { status: number|null, stdout: string, stderr: string }} CommandRunner
  */
 
@@ -48,6 +64,9 @@ export const PANEL_ROUTE = "/";
  * @typedef {object} ServerOptions
  * @property {string} [agentsDir]
  * @property {QueueItem[] | (() => QueueItem[])} [queue]
+ * @property {PermissionProvider} [permissions]
+ * @property {(id: string, decision: "approve" | "deny") => unknown} [onPermissionDecision]
+ * @property {(id: string, decision: "approve" | "deny") => unknown} [decidePermission]
  * @property {number} [port]
  * @property {string} [host]
  * @property {Record<string, string>} [transcripts]
@@ -479,12 +498,13 @@ function escapeHtml(str) {
 }
 
 /**
- * Renders the single-page HTML for agents (with xterm.js attach) and queue.
+ * Renders the single-page HTML for agents (with xterm.js attach), permissions, and queue.
  * @param {AgentInfo[]} agents
  * @param {QueueItem[]} queue
+ * @param {PermissionItem[]} [permissions=[]]
  * @returns {string}
  */
-export function renderHtml(agents, queue) {
+export function renderHtml(agents, queue, permissions = []) {
   const agentsHtml = agents.length === 0
     ? `<div class="empty-state">Henüz kayıtlı ajan bulunmuyor.</div>`
     : `<div class="card-list">
@@ -515,6 +535,34 @@ export function renderHtml(agents, queue) {
           </div>
         `).join("")}
       </div>`;
+
+  const permissionsHtml = permissions.length === 0
+    ? `<div class="empty-state">Bekleyen izin isteği bulunmuyor.</div>`
+    : `<table class="permissions-table">
+        <thead>
+          <tr>
+            <th>İzin ID</th>
+            <th>Hedef Ajan</th>
+            <th>Tür</th>
+            <th>İstem</th>
+            <th>İşlem</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${permissions.map((p) => `
+            <tr data-perm-id="${escapeHtml(p.id)}">
+              <td><code>${escapeHtml(p.id)}</code></td>
+              <td><code>${escapeHtml(p.agentId)}</code></td>
+              <td><span class="badge badge-sm">${escapeHtml(p.kind || "permission")}</span></td>
+              <td class="perm-prompt">${escapeHtml(p.prompt || "-")}</td>
+              <td class="perm-actions">
+                <button class="btn-approve" data-perm-id="${escapeHtml(p.id)}" onclick="decidePermission('${escapeHtml(p.id)}', 'approve')">Onayla</button>
+                <button class="btn-deny" data-perm-id="${escapeHtml(p.id)}" onclick="decidePermission('${escapeHtml(p.id)}', 'deny')">Reddet</button>
+              </td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>`;
 
   const queueHtml = queue.length === 0
     ? `<div class="empty-state">Kuyruk boş (0 iş bekliyor).</div>`
@@ -695,6 +743,62 @@ export function renderHtml(agents, queue) {
       background: #090d16;
       border-radius: 4px;
     }
+    .permissions-table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--card-bg);
+      border-radius: 0.5rem;
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }
+    .permissions-table th, .permissions-table td {
+      padding: 0.75rem 1rem;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.9rem;
+    }
+    .permissions-table th { background: rgba(0,0,0,0.25); color: var(--text-muted); font-weight: 600; }
+    .perm-prompt { color: #e2e8f0; word-break: break-word; }
+    .perm-actions { white-space: nowrap; }
+    .btn-approve {
+      background: #16a34a;
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      padding: 0.25rem 0.6rem;
+      font-size: 0.75rem;
+      font-weight: 600;
+      cursor: pointer;
+      margin-right: 0.35rem;
+      transition: background 0.15s ease-in-out;
+    }
+    .btn-approve:hover {
+      background: #15803d;
+    }
+    .btn-deny {
+      background: #dc2626;
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      padding: 0.25rem 0.6rem;
+      font-size: 0.75rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s ease-in-out;
+    }
+    .btn-deny:hover {
+      background: #b91c1c;
+    }
+    .status-decided {
+      font-weight: 600;
+      font-size: 0.8rem;
+    }
+    .status-decided.approve {
+      color: #4ade80;
+    }
+    .status-decided.deny {
+      color: #f87171;
+    }
     .empty-state {
       background: var(--card-bg);
       border: 1px dashed var(--border);
@@ -732,6 +836,11 @@ export function renderHtml(agents, queue) {
     <section id="agents-section">
       <h2>Ajanlar (${agents.length})</h2>
       ${agentsHtml}
+    </section>
+
+    <section id="permissions-section">
+      <h2>Bekleyen İzinler (${permissions.length})</h2>
+      ${permissionsHtml}
     </section>
 
     <section id="queue-section">
@@ -838,6 +947,31 @@ export function renderHtml(agents, queue) {
       const btn = document.querySelector('.btn-attach[data-agent-id="' + agentId + '"]');
       if (btn) btn.textContent = "Bağlan";
     }
+
+    function decidePermission(id, decision) {
+      fetch("/api/permissions/" + encodeURIComponent(id), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision: decision })
+      })
+        .then(function (res) {
+          if (res.ok) {
+            const row = document.querySelector('tr[data-perm-id="' + id + '"]');
+            if (row) {
+              const actions = row.querySelector(".perm-actions");
+              if (actions) {
+                actions.innerHTML = '<span class="status-decided ' + decision + '">' + (decision === "approve" ? "Onaylandı" : "Reddedildi") + "</span>";
+              }
+              row.style.opacity = "0.6";
+            }
+          } else {
+            alert("İzin kararı iletilemedi.");
+          }
+        })
+        .catch(function (err) {
+          alert("Hata: " + err.message);
+        });
+    }
   </script>
 </body>
 </html>`;
@@ -853,6 +987,9 @@ export function createServer(options = {}) {
   const runner = options.runner ?? options.run ?? spawnRunner;
   const pollIntervalMs = options.tailPollIntervalMs ?? 50;
 
+  /** @type {PermissionItem[]} */
+  const inMemoryPermissions = Array.isArray(options.permissions) ? options.permissions : [];
+
   /** @returns {QueueItem[]} */
   function getQueueState() {
     if (typeof options.queue === "function") {
@@ -864,10 +1001,127 @@ export function createServer(options = {}) {
     return [];
   }
 
+  /** @returns {PermissionItem[]} */
+  function getPermissionsState() {
+    if (typeof options.permissions === "function") {
+      return options.permissions();
+    }
+    if (Array.isArray(options.permissions)) {
+      return options.permissions;
+    }
+    if (options.permissions && typeof options.permissions === "object") {
+      const obj = /** @type {any} */ (options.permissions);
+      if (typeof obj.all === "function") {
+        return obj.all();
+      }
+      if (typeof obj.list === "function") {
+        return obj.list();
+      }
+    }
+    return inMemoryPermissions;
+  }
+
+  /**
+   * @param {string} id
+   * @param {"approve"|"deny"} decision
+   * @returns {boolean}
+   */
+  function handlePermissionDecision(id, decision) {
+    if (typeof options.onPermissionDecision === "function") {
+      options.onPermissionDecision(id, decision);
+      return true;
+    }
+    if (typeof options.decidePermission === "function") {
+      options.decidePermission(id, decision);
+      return true;
+    }
+    if (options.permissions && typeof options.permissions === "object" && !Array.isArray(options.permissions)) {
+      const obj = /** @type {any} */ (options.permissions);
+      if (typeof obj.decide === "function") {
+        obj.decide(id, decision);
+        return true;
+      }
+      if (typeof obj.resolve === "function") {
+        obj.resolve(id, decision);
+        return true;
+      }
+    }
+    if (Array.isArray(options.permissions)) {
+      const idx = options.permissions.findIndex((p) => p.id === id);
+      if (idx !== -1) {
+        options.permissions.splice(idx, 1);
+        return true;
+      }
+    }
+    const idx = inMemoryPermissions.findIndex((p) => p.id === id);
+    if (idx !== -1) {
+      inMemoryPermissions.splice(idx, 1);
+      return true;
+    }
+    return true;
+  }
+
   const server = http.createServer((req, res) => {
     const method = req.method ?? "GET";
     const parsedUrl = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
     const pathname = parsedUrl.pathname;
+
+    // Handle POST requests
+    if (method === "POST") {
+      const permMatch = pathname.match(/^\/api\/permissions\/([A-Za-z0-9_-]+)\/?$/);
+      if (permMatch) {
+        const permId = permMatch[1];
+        let body = "";
+        req.on("data", (chunk) => {
+          body += chunk.toString("utf8");
+          if (body.length > 1e6) {
+            req.destroy();
+          }
+        });
+        req.on("end", () => {
+          try {
+            const parsed = JSON.parse(body || "{}");
+            const decision = parsed.decision;
+            if (decision !== "approve" && decision !== "deny") {
+              const payload = JSON.stringify({ error: "Invalid decision. Expected 'approve' or 'deny'" });
+              res.writeHead(400, {
+                "Content-Type": "application/json; charset=utf-8",
+                "Content-Length": Buffer.byteLength(payload),
+              });
+              res.end(payload);
+              return;
+            }
+
+            handlePermissionDecision(permId, decision);
+
+            const payload = JSON.stringify({ ok: true });
+            res.writeHead(200, {
+              "Content-Type": "application/json; charset=utf-8",
+              "Content-Length": Buffer.byteLength(payload),
+            });
+            res.end(payload);
+          } catch {
+            const payload = JSON.stringify({ error: "Invalid JSON body" });
+            res.writeHead(400, {
+              "Content-Type": "application/json; charset=utf-8",
+              "Content-Length": Buffer.byteLength(payload),
+            });
+            res.end(payload);
+          }
+        });
+        return;
+      }
+
+      // Any other POST route returns 405 Method Not Allowed
+      const payload = JSON.stringify({ error: "Method Not Allowed" });
+      res.writeHead(405, {
+        "Content-Type": "application/json; charset=utf-8",
+        "Content-Length": Buffer.byteLength(payload),
+        "Allow": "GET, HEAD",
+      });
+      res.end(payload);
+      return;
+    }
 
     if (method !== "GET" && method !== "HEAD") {
       const payload = JSON.stringify({ error: "Method Not Allowed" });
@@ -957,6 +1211,48 @@ export function createServer(options = {}) {
       return;
     }
 
+    if (pathname === "/api/permissions") {
+      const perms = getPermissionsState();
+      const payload = JSON.stringify(perms);
+      res.writeHead(200, {
+        "Content-Type": "application/json; charset=utf-8",
+        "Content-Length": Buffer.byteLength(payload),
+      });
+      if (method === "HEAD") {
+        res.end();
+      } else {
+        res.end(payload);
+      }
+      return;
+    }
+
+    const singlePermMatch = pathname.match(/^\/api\/permissions\/([A-Za-z0-9_-]+)\/?$/);
+    if (singlePermMatch) {
+      const permId = singlePermMatch[1];
+      const perms = getPermissionsState();
+      const found = perms.find((p) => p.id === permId);
+      if (!found) {
+        const payload = JSON.stringify({ error: "Permission not found" });
+        res.writeHead(404, {
+          "Content-Type": "application/json; charset=utf-8",
+          "Content-Length": Buffer.byteLength(payload),
+        });
+        res.end(payload);
+        return;
+      }
+      const payload = JSON.stringify(found);
+      res.writeHead(200, {
+        "Content-Type": "application/json; charset=utf-8",
+        "Content-Length": Buffer.byteLength(payload),
+      });
+      if (method === "HEAD") {
+        res.end();
+      } else {
+        res.end(payload);
+      }
+      return;
+    }
+
     if (pathname === "/api/queue") {
       const queue = getQueueState();
       const payload = JSON.stringify(queue);
@@ -984,7 +1280,8 @@ export function createServer(options = {}) {
         return { ...agent, lastMessage };
       });
       const queue = getQueueState();
-      const html = renderHtml(enrichedAgents, queue);
+      const perms = getPermissionsState();
+      const html = renderHtml(enrichedAgents, queue, perms);
       const payload = Buffer.from(html, "utf8");
       res.writeHead(200, {
         "Content-Type": "text/html; charset=utf-8",
