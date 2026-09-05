@@ -66,8 +66,43 @@ import { attachJobStore, createJobStore } from "./store.js";
  */
 
 /**
+ * @typedef {object} NotificationEntryLike
+ * @property {string} kind
+ * @property {string|null} agentId
+ * @property {string|null} sessionId
+ * @property {string} message
+ * @property {number} at
+ * @property {unknown} payload
+ */
+
+/**
+ * The subset of src/service/permissions.js this file uses. Structural, not
+ * imported: phase-1 rule (src/MAP.js), same as QueueLike above.
+ *
+ * @typedef {object} PermissionsLike
+ * @property {(spec: { agentId: string, kind?: string, prompt: string, jobId?: string|null, payload?: unknown }) => PermissionRequestLike} request
+ * @property {(id: string, decision: string, ctx?: { by?: string, note?: string, at?: number }) => PermissionRequestLike} resolve
+ * @property {(id: string, ctx?: { by?: string, reason?: string, at?: number }) => PermissionRequestLike} cancel
+ * @property {(agentId: string) => boolean} isBlocked
+ * @property {(agentId: string) => { id: string }|null} blocking
+ * @property {(jobId: string) => string|null} reportLineFor
+ * @property {(filter?: { agentId?: string, jobId?: string, status?: string }) => PermissionRequestLike[]} history
+ */
+
+/**
+ * @typedef {object} PermissionRequestLike
+ * @property {string} id
+ * @property {string} agentId
+ * @property {string} kind
+ * @property {string} prompt
+ * @property {string|null} jobId
+ * @property {string} status
+ */
+
+/**
  * @typedef {object} AdapterLike
  * @property {(spec: { agentId: string, text: string }) => unknown} write
+ * @property {(payload: any) => NotificationEntryLike} [handleNotification]
  * @property {(payload: any) => SignalResultLike} [handleSignal]
  * @property {(payload: any) => SignalResultLike} [handleStop]
  * @property {(payload: any) => SignalResultLike} [handleNotify]
@@ -93,9 +128,16 @@ import { attachJobStore, createJobStore } from "./store.js";
  */
 
 /**
- * @param {{ queue: QueueLike, groups: GroupsLike, adapters: AdapterRegistry }} options
+ * `permissions` is optional and additive: without it this service behaves
+ * exactly as it did before (every existing caller passes three keys). With it,
+ * three things change and nothing else:
+ *   - dispatch() refuses to send work to an agent that is waiting on a human,
+ *   - handleNotification() turns "a human is needed" into a pending request,
+ *   - a job's report carries the decisions it had to wait for.
+ *
+ * @param {{ queue: QueueLike, groups: GroupsLike, adapters: AdapterRegistry, permissions?: PermissionsLike|null }} options
  */
-export function createControlService({ queue, groups, adapters }) {
+export function createControlService({ queue, groups, adapters, permissions = null }) {
   /** Jobs and groups are recorded/emitted once even if a signal is replayed. */
   const recordedJobs = new Set();
   const emittedGroups = new Set();
@@ -124,10 +166,46 @@ export function createControlService({ queue, groups, adapters }) {
       jobId: job.id,
       task: job.prompt,
       status: job.status,
-      report: job.report,
+      report: withPermissionLines(job),
       refusal: job.refusal,
       elapsedMs,
     });
+  }
+
+  /**
+   * The job's own report plus the decision record of every permission it had
+   * to wait for. Runs BEFORE buildResult, so a job whose only story is a denial
+   * still reports it instead of falling through to "(no report)".
+   * @param {JobLike} job
+   * @returns {string|null}
+   */
+  function withPermissionLines(job) {
+    if (permissions === null) return job.report;
+    const lines = permissions.reportLineFor(job.id);
+    if (lines === null || lines === "") return job.report;
+    const own = job.report !== null && job.report.trim() !== "" ? job.report : null;
+    return own === null ? lines : `${own}\n${lines}`;
+  }
+
+  /**
+   * A pending request belongs to the AGENT, not to the job: the dialog is on
+   * screen in a live tmux session and stays there after the turn that raised
+   * it ends. So a finished job does NOT cancel it - if it did, the dispatch
+   * gate would be meaningless, because dispatch only ever runs when the agent
+   * is idle, which is exactly after the job ended.
+   *
+   * The one case where the question really is gone is a dead session: the pane
+   * took the dialog with it. Cancelling is not deciding - the record says it
+   * was cancelled, and why.
+   *
+   * @param {JobLike} job
+   * @returns {void}
+   */
+  function cancelPendingFor(job) {
+    if (permissions === null || job.status !== "crashed") return;
+    for (const request of permissions.history({ agentId: job.agent ?? "", status: "pending" })) {
+      permissions.cancel(request.id, { by: "harnet", reason: `agent session ${job.status}` });
+    }
   }
 
   /**
@@ -136,7 +214,10 @@ export function createControlService({ queue, groups, adapters }) {
    * @returns {Wakeup|null}
    */
   function recordTerminal(job) {
-    if (recordedJobs.has(job.id) || job.groupId === null) return null;
+    if (recordedJobs.has(job.id)) return null;
+    // Even a job outside a group must release its agent's pending questions.
+    cancelPendingFor(job);
+    if (job.groupId === null) return null;
     recordedJobs.add(job.id);
     const recorded = groups.record(job.groupId, job.id, resultFromJob(job));
     if (!recorded.ready || emittedGroups.has(job.groupId)) return null;
@@ -163,6 +244,10 @@ export function createControlService({ queue, groups, adapters }) {
    * @returns {DispatchOutcome|null}
    */
   function dispatch(agent) {
+    // The agent is sitting on a dialog: its queued work waits where it is.
+    // Nothing is refused and no job status changes - the only thing that moves
+    // is when the send-keys happens.
+    if (permissions !== null && permissions.isBlocked(agent)) return null;
     const job = queue.dispatch(agent);
     if (job === null) return null;
     try {
@@ -269,6 +354,55 @@ export function createControlService({ queue, groups, adapters }) {
   }
 
   /**
+   * The agent hit a permission prompt. Both adapters already turn that hook
+   * into a NotificationEntry and deliberately leave the job running; this is
+   * the step that was missing - the question becomes a pending request bound
+   * to the job that is waiting for it, and the agent stops taking new work.
+   *
+   * Returns the request as null when no permission queue is wired, so a caller
+   * can tell "nobody is tracking this" from "tracked and pending".
+   *
+   * @param {{ agent: string, payload: any }} spec
+   */
+  function handleNotification(spec) {
+    const adapter = adapterFor(spec.agent);
+    if (adapter.handleNotification === undefined) {
+      throw new Error(`adapter for ${spec.agent} has no notification handler`);
+    }
+    const entry = adapter.handleNotification(spec.payload);
+    if (permissions === null) return { entry, request: null };
+    const running = queue.runningJob(spec.agent);
+    const request = permissions.request({
+      agentId: entry.agentId ?? spec.agent,
+      kind: entry.kind,
+      // A harness that sends an empty message still asked something; say so
+      // rather than throwing away the moment a human is needed.
+      prompt: entry.message !== "" ? entry.message : `${spec.agent} is waiting for a human`,
+      jobId: running === null ? null : running.id,
+      payload: entry.payload,
+    });
+    return { entry, request };
+  }
+
+  /**
+   * A human answered. The decision is recorded by the permission queue; what
+   * this adds is the release: an agent that is no longer blocked gets whatever
+   * dispatch could not send while it was.
+   *
+   * @param {{ id: string, decision: string, by?: string, note?: string, at?: number }} spec
+   */
+  function resolvePermission(spec) {
+    if (permissions === null) throw new Error("no permission queue is wired to this service");
+    const request = permissions.resolve(spec.id, spec.decision, {
+      by: spec.by,
+      note: spec.note,
+      at: spec.at,
+    });
+    const next = dispatch(request.agentId);
+    return { request, next };
+  }
+
+  /**
    * @param {{ timeoutMs?: number, at?: number }} [spec]
    */
   function sweepTimeouts(spec = {}) {
@@ -334,6 +468,8 @@ export function createControlService({ queue, groups, adapters }) {
     dispatch,
     complete,
     handleSignal,
+    handleNotification,
+    resolvePermission,
     sweepTimeouts,
     markCrashed,
     sweepCrashes,
@@ -352,6 +488,7 @@ export function createControlService({ queue, groups, adapters }) {
  * @param {QueueLike} [options.queue]
  * @param {GroupsLike} [options.groups]
  * @param {AdapterRegistry} [options.adapters]
+ * @param {PermissionsLike} [options.permissions] optional human-approval queue
  * @param {(text: string) => import("./report.js").ParsedTranscript} [options.parse]
  * @param {(ctx: { transcriptPath: string|null, agentId?: string, payload?: unknown }) => string|null} [options.reportReader]
  * @param {Partial<import("./report.js").ReportReaderOptions>} [options.reportReaderOptions]
@@ -373,7 +510,12 @@ export function setupControlService(options = {}) {
     }));
   const groups = options.groups ?? createGroupRegistry();
   const adapters = options.adapters ?? {};
-  const service = createControlService({ queue, groups, adapters });
+  const service = createControlService({
+    queue,
+    groups,
+    adapters,
+    permissions: options.permissions ?? null,
+  });
 
   let reportReader = options.reportReader;
   if (!reportReader && options.parse) {
