@@ -13,6 +13,8 @@
 - done: antigravity-daemon-1 (agy lane 1) - PR #12 merged, file store
 - done: claude-codexe2e-1 (claude) - PR #17 merged, codex live
 - done: antigravity-profiles-1 (agy lane 1) - PR #18 merged, profiles
+- open: claude-permwire-1 (claude) - permissions into control service, branch harnet/claude
+- open: antigravity-changelog-1 (agy lane 2) - CHANGELOG + release docs, branch harnet/antigravity-2
 - done: claude-permqueue-1 (claude) - PR #21 merged, perm queue
 - done: antigravity-permview-1 (agy lane 1) - PR #22 merged, perm view
 - done: antigravity-attach-1 (agy lane 1) - PR #20 merged, WS attach
@@ -30,9 +32,9 @@
 
 ## Board + limits
 - workbuddy: BLOCKED, limit hit (was thought unlimited, it is limited)
-- antigravity: lane 1 idle, lane 2 idle
+- antigravity: lane 1 idle, lane 2 busy (changelog-1)
 - chatgpt: idle, quota spared
-- claude: idle
+- claude: busy (permwire-1)
 
 ## Merge order
 - PR per job. Independent jobs = separate PRs to main, either order.
