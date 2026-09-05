@@ -333,3 +333,47 @@ Left / for whoever picks this up:
   carries the answer. So on codex the flush race cannot happen; on claude it can.
 - The codex weekly quota took exactly one turn (16946 tokens). DRY_BOOT runs
   before it were free.
+
+## 2026-09-04 - claude-permqueue-1 (src/service/permissions.js)
+
+New module: the human-approval queue that both adapters were missing a home for.
+Both already emit a NotificationEntry with kind "permission" (claude: the
+Notification hook; codex: an approval-required notify) and both explicitly do
+NOT touch the job - it stays running. Nothing consumed those entries. Now:
+
+createPermissionQueue({ now, idFactory, onRequest, onResolve }) ->
+  request({ agentId, kind, prompt, jobId?, payload?, at? }) -> PermissionRequest
+  resolve(id, "approve"|"deny", { by, note, at }) / cancel(id, { by, reason })
+  pending(agentId?) / blocking(agentId) / isBlocked(agentId) / blockedAgents()
+  get(id) / history({agentId,jobId,status}) / forJob(jobId) / reportLineFor(jobId)
+
+Design decisions worth not re-litigating:
+- The BLOCK is `isBlocked(agentId)`, a gate the dispatcher asks before sending
+  work - NOT a change to the job's status. No existing signature moved; the
+  queue, the adapters and the control service are untouched.
+- A decision is terminal: a second resolve/cancel throws instead of quietly
+  overwriting who decided what. Cancelled is a third state, never approved.
+- Requests hand out copies, so a caller cannot flip a decision by mutating what
+  it was handed.
+- Two questions from one agent are answered oldest first (Map insertion order).
+- reportLineFor(jobId) renders "permission (tool): approved by bedirhan after
+  12s - build dir only" - one line per request, appended by the CALLER to the
+  job report before jobs.js buildResult. A pending request prints "still waiting
+  for a human" rather than reading as an approval.
+- formatWaited duplicates jobs.js formatElapsed (phase-1 no-cross-import rule);
+  a test pins the two together so they cannot drift.
+
+test/permissions.test.js - 20 tests, incl. two integration tests that use the
+real claude adapter + real job queue (only tmux stubbed): a Notification becomes
+a pending request bound to the running job, the job stays "running" throughout,
+and the decision lands in that job's report. 318/318 tests, check clean.
+
+Left / for whoever picks this up:
+- src/MAP.js has NO permissions.js line yet - this job was scoped to
+  src/service/ and test/ only. Add it next time MAP is in scope.
+- Nothing wires it yet: no caller turns onNotification into request(), and
+  nothing consults isBlocked() before queue.dispatch(). That wiring belongs in
+  the control service (and would be the first signature change here).
+- No timeout on a pending request: a question nobody answers blocks its agent
+  forever until someone calls cancel(). A sweep like queue.sweepTimeouts() is
+  the obvious next step.
