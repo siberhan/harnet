@@ -2,7 +2,7 @@
 
 Role: scaffold + web panel + tests + docs. Fast, simple tasks first.
 Branch: harnet/antigravity. Dir: .harnet/agents/antigravity/wt.
-Status: turn 8 done. Waiting for the orchestrator. NOT pushed — commit sits on harnet/antigravity only.
+Status: turn 9 done. Waiting for the orchestrator. NOT pushed — commit sits on harnet/antigravity only.
 
 ## Turn 1 — job antigravity-panel-1 (read-only web panel, agents + queue)
 
@@ -164,5 +164,32 @@ Files:
 
 Left:
 - Phase 1 step 5 follow-up: wire live agent adapters (Claude/Codex) into the control service when ready.
-- Phase 2 follow-up: permission question queue in panel.
+- Phase 2: WebSocket, xterm.js attach to live tmux sessions, permission question queue.
+
+## Turn 9 — job antigravity-permview-1 (permissions view, endpoints, and approval/denial UI)
+
+Task: add permissions view and endpoints to panel: GET /api/permissions, POST /api/permissions/<id> { decision: approve|deny } -> { ok: true }, injectable provider pattern, pending permissions section on home page with Onayla/Reddet buttons.
+Commit: 5143a12 "feat(panel): add permissions view, endpoints, and decision handlers" (branch harnet/antigravity, untracked by push).
+
+What changed:
+- src/panel/server.js:
+  - Added `PermissionItem` and `PermissionProvider` type definitions and updated `ServerOptions` with `permissions`, `onPermissionDecision`, `decidePermission`.
+  - Added `getPermissionsState` and `handlePermissionDecision` supporting array, function (`() => []`), and object (`{ all, decide }`) providers with in-memory fallback.
+  - Added `GET /api/permissions` returning list of permissions (`[{ id, agentId, kind, prompt, createdAt }, ...]`).
+  - Added `GET /api/permissions/<id>` returning single item or 404.
+  - Added `POST /api/permissions/<id>` validating `{ decision: "approve" | "deny" }`, invoking handler, and returning `{ ok: true }` (or 400 on invalid decision/body).
+  - Updated `renderHtml` with "Bekleyen İzinler" section rendering table with ID, agentId, kind, prompt, and "Onayla" / "Reddet" action buttons (or empty state when none pending).
+  - Added client-side `decidePermission(id, decision)` calling `POST /api/permissions/<id>` and dynamically updating row state.
+- test/permissions.test.js:
+  - 15 unit and integration tests covering default empty list, HEAD /api/permissions, array/function/object providers, single permission retrieval and 404, approve/deny decisions, callback invocation, array item removal, 400 validation for invalid decisions and malformed JSON, 405 on non-POST routes, HTML rendering with buttons, and home page integration.
+- Tests & checks: npm test (313/313 passing, 15 new tests), npm run check (tsc strict checkJs) clean.
+
+Files:
+- src/panel/server.js
+- test/permissions.test.js
+
+Left:
+- Phase 1 step 5 follow-up: wire live agent adapters (Claude/Codex) into the control service when ready.
+- Phase 2 follow-up: connect real control service permission queue into panel options.
+
 
