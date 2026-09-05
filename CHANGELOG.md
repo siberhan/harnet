@@ -1,7 +1,7 @@
 # Değişiklik Günlüğü (Changelog)
 
 Harnet projesindeki tüm önemli değişiklikler bu dosyada belgelenir.
-Format [Keep a Changelog](https://keepachangelog.com/tr/1.0.0/) standardına uygundur ve proje [Semantic Versioning](https://semver.org/lang/tr/) kurallarını takip eder.
+Format [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) standardına uygundur ve proje [Semantic Versioning](https://semver.org/) kurallarını takip eder.
 
 ## [0.1.0] - 2026-09-05
 
