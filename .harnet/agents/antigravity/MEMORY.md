@@ -2,7 +2,7 @@
 
 Role: scaffold + web panel + tests + docs. Fast, simple tasks first.
 Branch: harnet/antigravity. Dir: .harnet/agents/antigravity/wt.
-Status: turn 7 done. Waiting for the orchestrator. NOT pushed — commit sits on harnet/antigravity only.
+Status: turn 8 done. Waiting for the orchestrator. NOT pushed — commit sits on harnet/antigravity only.
 
 ## Turn 1 — job antigravity-panel-1 (read-only web panel, agents + queue)
 
@@ -135,3 +135,34 @@ Files:
 Left:
 - Phase 1 step 5 follow-up: wire live agent adapters (Claude/Codex) into the control service when ready.
 - Phase 2: WebSocket, xterm.js attach to live tmux sessions, permission question queue.
+
+## Turn 8 — job antigravity-attach-1 (live terminal WebSocket attach, xterm.js UI)
+
+Task: add live terminal attach to web panel: npm install ws (approved exception), WS /api/agents/<id>/term streaming pipe-pane tail and relaying keys via send-keys, "Bağlan" button on each agent card with xterm.js via CDN.
+Commit: 9d87c77 "feat(panel): add live terminal WebSocket attach and xterm.js UI" (branch harnet/antigravity, untracked by push).
+
+What changed:
+- package.json & package-lock.json:
+  - Added `ws` dependency (approved exception for panel) and `@types/ws` in devDependencies to maintain strict JSDoc/tsc check without errors.
+- src/panel/server.js:
+  - Added WebSocket server support on HTTP server upgrade event.
+  - Added WS endpoint `/api/agents/<id>/term` streaming live `pane.log` output via `attachPaneTail` (polling fallback + fs.watch) and relaying incoming keystrokes to `harnet-<id>` tmux session via `sendTmuxKeys`.
+  - Handled special keys (Enter, Backspace, arrows, Ctrl-C, Ctrl-D) and structured JSON envelopes in `sendTmuxKeys`.
+  - Added `findPaneLogPath` helper with options override for test isolation.
+  - Updated `renderHtml` to load xterm.js from CDN (CSS + JS script tags, zero npm package).
+  - Added "Bağlan" toggle button on each agent card and expandable terminal container with live bidirectional WebSocket session.
+- test/term.test.js:
+  - 13 comprehensive unit and integration tests on real OS-assigned port.
+  - Tested helper functions (`sessionName`, `findPaneLogPath`, `sendTmuxKeys`, `spawnRunner`), CDN script tags and "Bağlan" UI rendering, WebSocket handshake, initial pane.log streaming, real-time appended bytes streaming, `send-keys` relay via fake runner, late pane.log creation, 404 on invalid WS paths, and error handling without crashes.
+- Tests & checks: npm test (298/298 passing, 18 new assertions), npm run check (tsc strict checkJs) clean.
+
+Files:
+- package.json
+- package-lock.json
+- src/panel/server.js
+- test/term.test.js
+
+Left:
+- Phase 1 step 5 follow-up: wire live agent adapters (Claude/Codex) into the control service when ready.
+- Phase 2 follow-up: permission question queue in panel.
+
