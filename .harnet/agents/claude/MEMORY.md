@@ -377,3 +377,49 @@ Left / for whoever picks this up:
 - No timeout on a pending request: a question nobody answers blocks its agent
   forever until someone calls cancel(). A sweep like queue.sweepTimeouts() is
   the obvious next step.
+
+## 2026-09-04 - claude-permwire-1 (permissions -> control service)
+
+createControlService now takes an OPTIONAL 4th key: `permissions`. No existing
+signature moved; without it the service behaves exactly as before (two tests
+pin that). setupControlService passes options.permissions through.
+
+Three touch points, and nothing else:
+- handleNotification({ agent, payload }) - new method. Calls the adapter's own
+  handleNotification (both adapters have it), then turns the entry into
+  permissions.request({ agentId, kind: entry.kind, prompt, jobId: running job,
+  payload }). An empty harness message becomes "<agent> is waiting for a human"
+  rather than being dropped. Returns { entry, request }; request is null when no
+  permission queue is wired.
+- dispatch(agent) returns null early when permissions.isBlocked(agent). The job
+  stays QUEUED - no status change, no refusal, only the send-keys waits.
+- resultFromJob() appends permissions.reportLineFor(job.id) to job.report BEFORE
+  buildResult, so a job whose only story is a denial no longer reads "(no report)".
+- resolvePermission({ id, decision, by, note }) - new method: resolve, then
+  dispatch(agentId) to release what the block held back.
+
+THE DESIGN TRAP, worth remembering: my first cut cancelled a job's pending
+requests when the job went terminal. That makes the gate meaningless - dispatch
+only ever runs when the agent is IDLE, i.e. after the job ended, so the block
+would never hold anything back. A pending request belongs to the AGENT (the
+dialog is still on the pane after the turn ends), not to the job. So:
+  - job done/timeout with an unanswered question -> request STAYS pending, the
+    agent stays blocked, and the report says "still waiting for a human";
+  - only status "crashed" cancels the agent's pending requests (the pane took
+    the dialog with it), reason "agent session crashed".
+
+test/permission-wiring.test.js - 12 tests on the real claude adapter + real
+queue + real service (only tmux stubbed): notification -> pending request bound
+to the running job, second job held back until the decision then released,
+denial releases too, approved/pending/cancelled all reaching the wake-up text,
+and the two "without permissions nothing changes" tests. 345/345, check clean.
+
+Left / for whoever picks this up:
+- Nothing CALLS service.handleNotification yet: the hook/notify transport
+  (bin/, panel) still has to route Notification payloads into it, the same way
+  handleSignal is routed today.
+- The report line prints the adapter's own word for the kind, so it reads
+  "permission (permission): approved by ...". Fine but redundant; changing it
+  means classifying the prompt, which is a guess.
+- Still no timeout on a pending request; only a crash clears one automatically.
+- src/MAP.js still has no permissions.js line (out of scope again this turn).
