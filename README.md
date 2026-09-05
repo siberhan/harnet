@@ -1,5 +1,7 @@
 # Harnet
 
+> **Durum (v0.1.0):** MVP kapsamı tamamlandı — 333 test yeşil (`npm test` ve `npm run check`).
+
 Harnet; Claude Code ve Codex gibi yapay zeka kodlama araçları için geliştirilmiş bir ajan orkestrasyon aracıdır. Her ajana net bir kimlik, kendi izole çalışma alanını ve diğer ajanlara görev devretme imkânı sunar.
 
 Ajanlar birbirini doğrudan başlatmaz; onları Harnet başlatır, denetler ve sonuçları birleştirir. Çalışma alanı izolasyonu düz `git worktree` ile sağlanır.
